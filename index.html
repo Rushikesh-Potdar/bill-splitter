@@ -141,7 +141,23 @@
   #bdTable tr.pay.b td:first-child, #bdTable tr.pay.b td.val { color: var(--b); }
   #bdTable tr.pay.a td { background: var(--accent-soft); }
   #bdTable tr.pay.b td { background: var(--b-soft); }
-  #bdTable tr:last-child td { border-bottom: 0; color: var(--muted); }
+  #bdTable tr:last-child td { border-bottom: 0; }
+  #bdTable tr.check td { color: var(--muted); }
+  #bdTable tr.paid-row td.val { color: var(--a); }
+  #bdTable tr.unpaid-row td.val { color: var(--danger); }
+  .badges { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+  .badge { font-size: .72rem !important; font-weight: 600; padding: 3px 8px; border-radius: 999px; color: var(--text) !important; }
+  .badge.paid { background: var(--accent-soft); }
+  .badge.unpaid { background: color-mix(in srgb, var(--danger) 14%, transparent); }
+  .links { display: flex; gap: 14px; }
+  .pay-box { border: 1px solid var(--line); border-radius: 12px; padding: 12px; margin-bottom: 10px; }
+  .pay-box.a { border-left: 4px solid var(--a); }
+  .pay-box.b { border-left: 4px solid var(--b); }
+  .pay-toggle { display: flex; align-items: center; gap: 10px; color: var(--text); font-size: .95rem; margin-bottom: 12px; cursor: pointer; }
+  .pay-toggle input { width: 22px; height: 22px; margin: 0; flex: none; appearance: auto; -webkit-appearance: checkbox; accent-color: var(--accent); }
+  .pay-box .row label { margin-bottom: 8px; }
+  .chips { display: flex; gap: 6px; flex-wrap: wrap; }
+  .chip { border: 1px solid var(--line); background: var(--input); color: var(--text); font: inherit; font-size: .8rem; padding: 6px 12px; border-radius: 999px; cursor: pointer; }
   .view-only { display: none; }
   body.viewer .view-only { display: block; }
   body.viewer .edit-only { display: none !important; }
@@ -297,6 +313,14 @@
     </details>
   </section>
 </main>
+<dialog id="payDlg" aria-labelledby="payTitle">
+  <h2 id="payTitle">Payment</h2>
+  <div id="payRows"></div>
+  <div class="btns">
+    <button class="btn" id="payClose" type="button">Cancel</button>
+    <button class="btn primary" id="paySave" type="button">Save</button>
+  </div>
+</dialog>
 <dialog id="breakup" aria-labelledby="bdTitle">
   <h2 id="bdTitle">Breakup</h2>
   <p class="units" id="bdNote" hidden style="margin:-4px 0 10px"></p>
@@ -304,6 +328,7 @@
   <div class="btns">
     <button class="btn" id="bdShare" type="button">Share</button>
     <button class="btn primary" id="bdClose" type="button">Close</button>
+    <button class="btn full" id="bdPay" type="button" hidden>💰 Mark as paid</button>
   </div>
 </dialog>
 <div class="toast" id="toast"></div>
@@ -429,8 +454,14 @@
       ["Rate per unit", `${inr(energy)} ÷ ${fmtU(e.mainU)}`, `₹${r4}`],
       [`${nA} pays`, `${fmtU(e.subU)} × ₹${r4}${plusFixed}`, inr(e.a), "a"],
       [`${nB} pays`, `${fmtU(e.otherU)} × ₹${r4}${plusFixed}`, inr(e.b), "b"],
-      ["Check", `${inr(e.a)} + ${inr(e.b)}`, inr(e.a + e.b)],
+      ["Check", `${inr(e.a)} + ${inr(e.b)}`, inr(e.a + e.b), "check"],
     );
+    if (e.paid || e.savedAt) {
+      [["a", nA], ["b", nB]].forEach(([k, n]) => {
+        const p = e.paid[k] || {};
+        rows.push([`${n}'s payment`, p.paid ? [p.remark, p.date && fmtDate(p.date)].filter(Boolean).join(" · ") || "—" : "", p.paid ? "Paid ✓" : "Not paid", p.paid ? "paid-row" : "unpaid-row"]);
+      });
+    }
     return { rows, rate: r4, fixed };
   }
 
@@ -444,15 +475,23 @@
       rows.map((r) => `<tr class="${r.cls || ""}">${r.cells.map((v, i) => `<td class="${cols[i].cls || ""}">${esc(v)}</td>`).join("")}</tr>`).join("") +
       `</tbody>`;
     $("bdShare").onclick = () => shareText(share);
+    $("bdPay").hidden = true;
     $("breakup").showModal();
   }
 
   function showBreakup(e) {
+    // If this month is saved, show the saved entry so payment status appears (and can be edited).
+    const saved = data.history.find((h) => h.month && h.month === e.month);
+    if (saved && !e.savedAt && saved.total === e.total && saved.mainCur === e.mainCur && saved.subCur === e.subCur) e = saved;
     const { rows } = breakupRows(e);
     showTable(`Breakup · ${monthLabel(e.month)}`,
       [{ label: "Item" }, { label: "How", cls: "how" }, { label: "Amount", cls: "val" }],
-      rows.map(([k, how, val, who]) => ({ cells: [k, how, val], cls: who ? `pay ${who}` : "" })),
+      rows.map(([k, how, val, who]) => ({ cells: [k, how, val], cls: who === "a" || who === "b" ? `pay ${who}` : who || "" })),
       summaryText(e));
+    if (e.savedAt && sync.canEdit()) {
+      $("bdPay").hidden = false;
+      $("bdPay").onclick = () => { $("breakup").close(); showPay(e); };
+    }
   }
 
   // Readings are taken on the 8th: a month's current reading is dated the 8th of that bill month,
@@ -519,10 +558,16 @@
     ul.innerHTML = "";
     [...data.history].sort((x, y) => (y.month || "").localeCompare(x.month || "")).forEach((h) => {
       const li = document.createElement("li");
+      const badge = (k) => {
+        const p = (h.paid || {})[k] || {};
+        return `<span class="badge ${p.paid ? "paid" : "unpaid"}">${esc(h.names[k])}: ${p.paid ? "Paid ✓" + (p.remark ? " · " + esc(p.remark) : "") : "Not paid"}</span>`;
+      };
       li.innerHTML = `<div class="m"><b>${monthLabel(h.month)} · ${inr(h.total)}</b>
         <span>${esc(h.names.a)} ${inr(h.a)} (${fmtU(h.subU)}u) · ${esc(h.names.b)} ${inr(h.b)} (${fmtU(h.otherU)}u)</span>
-        <button class="bd-link" type="button">View breakup ›</button></div>`;
+        <div class="badges">${badge("a")}${badge("b")}</div>
+        <div class="links"><button class="bd-link" type="button">View breakup ›</button>${sync.canEdit() ? `<button class="bd-link pay-link" type="button">Mark as paid ›</button>` : ""}</div></div>`;
       li.querySelector(".bd-link").onclick = () => showBreakup(h);
+      li.querySelector(".pay-link")?.addEventListener("click", () => showPay(h));
       const open = document.createElement("button");
       open.className = "x"; open.textContent = "↺"; open.title = "Load into form"; open.setAttribute("aria-label", "Load");
       open.onclick = () => { loadEntry(h); window.scrollTo({ top: 0, behavior: "smooth" }); toast("Loaded " + monthLabel(h.month)); };
@@ -538,6 +583,60 @@
       ul.append(li);
     });
   }
+
+  const fmtDate = (iso) => {
+    const [y, m, d] = iso.split("-").map(Number);
+    return `${String(d).padStart(2, "0")} ${"Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec".split(" ")[m - 1]} ${y}`;
+  };
+  const todayISO = () => {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  };
+
+  // Payment status per person: entry.paid = { a: { paid, remark, date }, b: {...} }
+  function showPay(h) {
+    if (!sync.canEdit()) return;
+    $("payTitle").textContent = `Payment · ${monthLabel(h.month)}`;
+    $("payRows").innerHTML = "";
+    ["a", "b"].forEach((k) => {
+      const p = (h.paid || {})[k] || {};
+      const box = document.createElement("div");
+      box.className = `pay-box ${k}`;
+      box.innerHTML = `
+        <label class="pay-toggle"><input type="checkbox" data-k="${k}" ${p.paid ? "checked" : ""}>
+          <span><b>${esc(h.names[k])}</b> paid ${inr(h[k])}</span></label>
+        <div class="row">
+          <label>Remark
+            <input type="text" data-r="${k}" value="${esc(p.remark || "")}" placeholder="UPI, Cash…" maxlength="60" autocomplete="off">
+          </label>
+          <label>Paid on
+            <input type="date" data-d="${k}" value="${esc(p.date || "")}">
+          </label>
+        </div>
+        <div class="chips">${["UPI", "Cash", "Bank transfer"].map((c) => `<button type="button" class="chip" data-c="${k}">${c}</button>`).join("")}</div>`;
+      const chk = box.querySelector("[data-k]"), date = box.querySelector("[data-d]"), rem = box.querySelector("[data-r]");
+      chk.onchange = () => { if (chk.checked && !date.value) date.value = todayISO(); };
+      box.querySelectorAll(".chip").forEach((c) => (c.onclick = () => {
+        rem.value = c.textContent;
+        if (!chk.checked) { chk.checked = true; chk.onchange(); }
+      }));
+      $("payRows").append(box);
+    });
+    $("paySave").onclick = () => {
+      const paid = {};
+      ["a", "b"].forEach((k) => {
+        const on = $("payRows").querySelector(`[data-k="${k}"]`).checked;
+        const remark = $("payRows").querySelector(`[data-r="${k}"]`).value.trim();
+        const date = $("payRows").querySelector(`[data-d="${k}"]`).value;
+        paid[k] = on ? { paid: true, remark, date: date || todayISO() } : { paid: false, remark, date: "" };
+      });
+      h.paid = paid;
+      store.save(data); renderHistory(); sync.put(h);
+      $("payDlg").close(); toast("Payment saved ✓");
+    };
+    $("payDlg").showModal();
+  }
+  $("payClose").onclick = () => $("payDlg").close();
 
   function loadEntry(h) {
     $("month").value = h.month || ""; $("total").value = h.total;
@@ -568,6 +667,7 @@
     const i = data.history.findIndex((h) => h.month && h.month === month);
     if (i >= 0) {
       if (!confirm(`${monthLabel(month)} is already saved. Replace it?`)) return;
+      if (data.history[i].paid) entry.paid = data.history[i].paid; // keep payment status
       data.history[i] = entry;
     } else data.history.push(entry);
     sync.put(entry);

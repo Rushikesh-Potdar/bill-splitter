@@ -123,6 +123,11 @@
   details summary::-webkit-details-marker { display: none; }
   details summary::after { content: "▾"; float: right; color: var(--muted); }
   details[open] summary { margin-bottom: 12px; }
+  .view-only { display: none; }
+  body.viewer .view-only { display: block; }
+  body.viewer .edit-only { display: none !important; }
+  body.viewer #shareBtn { grid-column: 1 / -1; }
+  .banner { margin-top: 10px !important; padding: 8px 12px; border-radius: 10px; background: var(--b-soft); color: var(--text) !important; font-size: .85rem; }
   .toast {
     position: fixed; left: 50%; bottom: calc(20px + env(safe-area-inset-bottom));
     transform: translateX(-50%) translateY(20px); opacity: 0;
@@ -137,6 +142,7 @@
   <header>
     <h1>⚡ Electricity Bill Splitter</h1>
     <p>Main meter + submeter → who pays what</p>
+    <p class="banner view-only">👁 View-only · history is shared from <b id="bannerName">Rushikesh</b>'s phone</p>
   </header>
 
   <section class="card">
@@ -210,7 +216,7 @@
     <div class="breakdown" id="breakdown"></div>
     <p class="err" id="err" hidden></p>
     <div class="btns">
-      <button class="btn primary" id="saveBtn" type="button">Save month</button>
+      <button class="btn primary edit-only" id="saveBtn" type="button">Save month</button>
       <button class="btn" id="shareBtn" type="button">Share</button>
     </div>
   </section>
@@ -231,11 +237,15 @@
       <div class="btns"><button class="btn full" id="joinBtn" type="button">Join</button></div>
     </div>
     <div id="syncOn" hidden>
-      <p class="units">Both phones see the same saved months and names. Send the invite link to the other phone once.</p>
-      <div class="btns">
-        <button class="btn primary" id="inviteBtn" type="button">Send invite</button>
-        <button class="btn" id="copyCodeBtn" type="button">Copy code</button>
+      <div class="edit-only">
+        <p class="units">Send the <b>view-only</b> invite to the other phone once. They'll see every saved month but can't add, change or delete anything.</p>
+        <div class="btns">
+          <button class="btn primary full" id="inviteBtn" type="button">Send view-only invite</button>
+        </div>
+        <p class="units" style="margin-top:12px">Your editor link lets you edit from another phone of yours. Keep it private.</p>
+        <div class="btns"><button class="btn full" id="copyEditBtn" type="button">Copy my editor link</button></div>
       </div>
+      <p class="units view-only">You're viewing <b id="ownerName">Rushikesh</b>'s bill history. Only they can add, change or delete months.</p>
       <div class="btns"><button class="btn link full" id="leaveBtn" type="button">Stop syncing on this phone</button></div>
     </div>
   </section>
@@ -243,15 +253,15 @@
   <section class="card">
     <details>
       <summary>Settings</summary>
-      <label>Person on the submeter
+      <label class="edit-only">Person on the submeter
         <input type="text" id="setA" autocomplete="off">
       </label>
-      <label>Other person (main − submeter)
+      <label class="edit-only">Other person (main − submeter)
         <input type="text" id="setB" autocomplete="off">
       </label>
       <div class="btns">
         <button class="btn" id="exportBtn" type="button">Backup history</button>
-        <button class="btn" id="importBtn" type="button">Restore backup</button>
+        <button class="btn edit-only" id="importBtn" type="button">Restore backup</button>
         <input type="file" id="importFile" accept="application/json,.json" hidden>
       </div>
       <div class="btns"><button class="btn link full" id="clearBtn" type="button">Clear current form</button></div>
@@ -382,7 +392,9 @@
         data.history = data.history.filter((x) => x !== h); store.save(data); renderHistory();
         sync.remove(h.month);
       };
-      li.append(open, del); ul.append(li);
+      li.append(open);
+      if (sync.canEdit()) li.append(del);
+      ul.append(li);
     });
   }
 
@@ -408,7 +420,7 @@
   }));
 
   $("saveBtn").onclick = () => {
-    const r = calc(); if (!r.ok) return;
+    const r = calc(); if (!r.ok || !sync.canEdit()) return;
     const month = $("month").value;
     if (!month) { toast("Pick the bill month first"); $("month").focus(); return; }
     const entry = {
@@ -465,7 +477,7 @@
       const d = JSON.parse(await file.text());
       if (!Array.isArray(d.history)) throw new Error();
       if (!confirm(`Restore ${d.history.length} saved month(s)? This replaces current history.`)) return;
-      const { syncCode, pendingMigrate, ...rest } = d; // keep this phone's sync setting
+      const { syncCode, editKey, editorUid, pendingMigrate, ...rest } = d; // keep this phone's sync setting
       data = Object.assign(data, rest); store.save(data); init(); toast("Backup restored");
       data.history.forEach((h) => sync.put(h));
     } catch { alert("That file isn't a valid backup."); }
@@ -483,28 +495,33 @@
   }
 
   // ---- sync (Firebase Firestore; enabled only when firebase-config.js has a config)
+  // data.syncCode = household code (read access). data.editKey = only on the owner's phone (write access).
+  // Writes are enforced by firestore.rules: only anonymous-auth users registered with the edit key can write.
   const FB = "https://www.gstatic.com/firebasejs/10.12.2/";
   const sync = {
-    cfg: null, fs: null, db: null, unsubs: [],
+    cfg: null, fs: null, db: null, auth: null, uid: null, unsubs: [],
     on() { return !!(this.db && data.syncCode); },
-    col() { return this.fs.collection(this.db, "households", data.syncCode, "months"); },
-    namesDoc() { return this.fs.doc(this.db, "households", data.syncCode, "meta", "names"); },
+    canEdit() { return !data.syncCode || !!data.editKey; },
+    hh(...p) { return [this.db, "households", data.syncCode, ...p]; },
+    col() { return this.fs.collection(...this.hh("months")); },
+    namesDoc() { return this.fs.doc(...this.hh("meta", "names")); },
+    queue: [],
+    write(fn) { if (!this.on() || !data.editKey) return; this.ready ? fn() : this.queue.push(fn); },
     put(entry) {
-      if (!this.on() || !entry.month) return;
-      this.fs.setDoc(this.fs.doc(this.col(), entry.month), entry).catch((e) => this.status("error", e));
+      if (!entry.month) return;
+      this.write(() => this.fs.setDoc(this.fs.doc(this.col(), entry.month), entry).catch((e) => this.status("error", e)));
     },
     remove(month) {
-      if (!this.on() || !month) return;
-      this.fs.deleteDoc(this.fs.doc(this.col(), month)).catch((e) => this.status("error", e));
+      if (!month) return;
+      this.write(() => this.fs.deleteDoc(this.fs.doc(this.col(), month)).catch((e) => this.status("error", e)));
     },
     putNames() {
-      if (!this.on()) return;
-      this.fs.setDoc(this.namesDoc(), { ...data.names }).catch((e) => this.status("error", e));
+      this.write(() => this.fs.setDoc(this.namesDoc(), { ...data.names }).catch((e) => this.status("error", e)));
     },
     status(kind, err) {
       const map = { ok: ["Synced", "var(--a)"], offline: ["Offline – will sync later", "var(--b)"], wait: ["Connecting…", "var(--muted)"], error: ["Sync error", "var(--danger)"] };
       const [txt, color] = map[kind];
-      $("syncStatus").textContent = txt; $("syncDot").style.background = color;
+      $("syncStatus").textContent = (data.editKey ? "" : "View-only · ") + txt; $("syncDot").style.background = color;
       if (err) console.error(err);
       if (kind === "error" && err) toast("Sync error: " + (err.code || err.message || err));
     },
@@ -513,36 +530,86 @@
       const on = !!data.syncCode;
       $("syncOff").hidden = on; $("syncOn").hidden = !on;
       $("syncDot").hidden = !on; $("syncStatus").hidden = !on;
-      $("histNote").textContent = on && this.cfg ? "shared with the other phone" : "saved on this phone";
+      document.body.classList.toggle("viewer", !this.canEdit());
+      $("ownerName").textContent = $("bannerName").textContent = data.names.a;
+      $("histNote").textContent = on && this.cfg ? (data.editKey ? "shared, only you can edit" : "view-only") : "saved on this phone";
+      renderHistory();
+    },
+    // Accepts a full invite link or a bare code. Returns { code, edit } or null.
+    parse(s) {
+      const code = (s.match(/(?:view|join)=([A-Za-z0-9]{20,64})/) || [])[1] || (/^[A-Za-z0-9]{20,64}$/.test(s) ? s : null);
+      if (!code) return null;
+      return { code, edit: (s.match(/edit=([A-Za-z0-9]{20,64})/) || [])[1] || null };
+    },
+    async adopt({ code, edit }) {
+      if (code === data.syncCode && (!edit || edit === data.editKey)) return false; // already set up
+      if (code === data.syncCode && data.editKey && !edit) return false; // never downgrade the owner's phone
+      this.stop();
+      data.syncCode = code; data.editKey = edit; data.editorUid = null;
+      data.pendingMigrate = !!edit; // viewers never upload
+      store.save(data); this.ui();
+      await this.connect();
+      return true;
+    },
+    stop() {
+      this.unsubs.forEach((u) => u()); this.unsubs = [];
+      this.ready = false; this.queue = [];
     },
     async init() {
       try { this.cfg = (await import("./firebase-config.js")).firebaseConfig || null; } catch { this.cfg = null; }
-      // Invite links look like …/#join=CODE
-      const m = location.hash.match(/join=([A-Za-z0-9]{20,})/);
-      if (m) {
-        history.replaceState(null, "", location.pathname + location.search);
-        if (this.cfg && m[1] !== data.syncCode && confirm("Join the shared bill history from the invite link?")) {
-          data.syncCode = m[1]; data.pendingMigrate = true; store.save(data);
-        }
+      if (data.syncCode && !("editKey" in data)) {
+        // Joined with the old invite (before view-only existed): disconnect, keep local history.
+        data.syncCode = null; data.pendingMigrate = false; store.save(data);
       }
+      const link = this.parse(location.hash.slice(1));
+      if (location.hash) history.replaceState(null, "", location.pathname + location.search);
       this.ui();
+      if (this.cfg && link && !(link.code === data.syncCode && (data.editKey || !link.edit))) {
+        const msg = link.edit ? "Open the shared bill history with EDIT access on this phone?" : "Open the shared bill history (view-only) on this phone?";
+        if (confirm(msg)) { await this.adopt(link); toast(link.edit ? "Joined as editor ✓" : "Joined – view-only ✓"); return; }
+      }
       if (this.cfg && data.syncCode) await this.connect();
+    },
+    async load() {
+      if (this.db) return;
+      const [{ initializeApp }, fs, au] = await Promise.all(["firebase-app.js", "firebase-firestore.js", "firebase-auth.js"].map((f) => import(FB + f)));
+      this.fs = fs; this.au = au;
+      const app = initializeApp(this.cfg);
+      try { this.db = fs.initializeFirestore(app, { localCache: fs.persistentLocalCache() }); }
+      catch { this.db = fs.getFirestore(app); }
+      this.auth = au.getAuth(app);
+    },
+    // Owner's phone: sign in anonymously and register this device with the edit key.
+    async registerEditor() {
+      const { fs, au, auth } = this;
+      await auth.authStateReady();
+      if (!auth.currentUser) await au.signInAnonymously(auth);
+      const uid = auth.currentUser.uid;
+      if (data.editorUid !== uid) {
+        const key = data.editKey;
+        // Claims the household on first use; fails harmlessly if it's already claimed.
+        await fs.setDoc(fs.doc(...this.hh("secret", "edit")), { key }).catch(() => {});
+        await fs.setDoc(fs.doc(...this.hh("editors", uid)), { key });
+        data.editorUid = uid; store.save(data);
+      }
+      this.ready = true;
+      this.queue.splice(0).forEach((fn) => fn());
     },
     async connect() {
       this.status("wait");
       try {
-        if (!this.db) {
-          const [{ initializeApp }, fs] = await Promise.all([import(FB + "firebase-app.js"), import(FB + "firebase-firestore.js")]);
-          this.fs = fs;
-          const app = initializeApp(this.cfg);
-          try { this.db = fs.initializeFirestore(app, { localCache: fs.persistentLocalCache() }); }
-          catch { this.db = fs.getFirestore(app); }
-        }
+        await this.load();
+        this.stop();
         const fs = this.fs;
-        this.unsubs.forEach((u) => u()); this.unsubs = [];
+        if (data.editKey) {
+          this.registerEditor().catch((e) => {
+            this.status("error", e);
+            if (e.code === "permission-denied") alert("This phone's edit link isn't valid for this history. Ask for a new link or stop syncing.");
+          });
+        }
         this.unsubs.push(fs.onSnapshot(this.col(), { includeMetadataChanges: true }, (snap) => {
           if (data.pendingMigrate && !snap.metadata.fromCache) {
-            // First connection on this phone: upload months that only exist locally.
+            // First connection as editor: upload months that only exist on this phone.
             const remote = new Set(snap.docs.map((d) => d.id));
             data.history.filter((h) => h.month && !remote.has(h.month)).forEach((h) => this.put(h));
             data.pendingMigrate = false; store.save(data);
@@ -558,11 +625,14 @@
           data.names = { a: n.a || "Rushikesh", b: n.b || "Prashant" }; store.save(data);
           if (document.activeElement !== $("setA")) $("setA").value = data.names.a;
           if (document.activeElement !== $("setB")) $("setB").value = data.names.b;
-          render(); renderHistory();
+          render(); this.ui();
         }, (e) => this.status("error", e)));
       } catch (e) { this.status("error", e); }
     },
-    inviteLink() { return `${location.origin}${location.pathname}#join=${data.syncCode}`; },
+    link(withEdit) {
+      const base = `${location.origin}${location.pathname}#view=${data.syncCode}`;
+      return withEdit ? `${base}&edit=${data.editKey}` : base;
+    },
   };
 
   function newCode() {
@@ -571,31 +641,33 @@
   }
 
   $("syncStartBtn").onclick = async () => {
-    data.syncCode = newCode(); data.pendingMigrate = true; store.save(data);
-    sync.ui(); await sync.connect(); sync.putNames();
-    toast("Sync started – now send the invite");
+    await sync.adopt({ code: newCode(), edit: newCode() });
+    sync.putNames();
+    toast("Sync started – now send the view-only invite");
   };
   $("joinBtn").onclick = async () => {
-    const raw = $("joinCode").value.trim();
-    const code = (raw.match(/join=([A-Za-z0-9]{20,})/) || [])[1] || (/^[A-Za-z0-9]{20,}$/.test(raw) ? raw : null);
-    if (!code) { toast("That code doesn't look right"); return; }
-    data.syncCode = code; data.pendingMigrate = true; store.save(data);
-    $("joinCode").value = ""; sync.ui(); await sync.connect(); toast("Joined ✓");
+    const link = sync.parse($("joinCode").value.trim());
+    if (!link) { toast("That code doesn't look right"); return; }
+    $("joinCode").value = "";
+    await sync.adopt(link);
+    toast(link.edit ? "Joined as editor ✓" : "Joined – view-only ✓");
   };
   $("inviteBtn").onclick = async () => {
-    const text = `Open this link to share our electricity bill history:\n${sync.inviteLink()}`;
+    const text = `View our electricity bill history (view-only):\n${sync.link(false)}`;
     if (navigator.share) { try { await navigator.share({ text }); return; } catch (e) { if (e.name === "AbortError") return; } }
     window.open("https://wa.me/?text=" + encodeURIComponent(text), "_blank");
   };
-  $("copyCodeBtn").onclick = async () => {
-    try { await navigator.clipboard.writeText(sync.inviteLink()); toast("Invite link copied"); }
-    catch { prompt("Copy this invite link:", sync.inviteLink()); }
+  $("copyEditBtn").onclick = async () => {
+    if (!confirm("Anyone with your editor link can change and delete months. Copy it only for your own devices.")) return;
+    try { await navigator.clipboard.writeText(sync.link(true)); toast("Editor link copied"); }
+    catch { prompt("Your editor link (keep private):", sync.link(true)); }
   };
   $("leaveBtn").onclick = () => {
-    if (!confirm("Stop syncing on this phone? History already here is kept, and the other phone is not affected.")) return;
-    sync.unsubs.forEach((u) => u()); sync.unsubs = [];
-    data.syncCode = null; data.pendingMigrate = false; store.save(data);
-    sync.ui(); renderHistory();
+    const warn = data.editKey ? "\n\nYou're the editor: copy your editor link first, or you won't be able to edit this history again." : "";
+    if (!confirm("Stop syncing on this phone? History already here is kept, and the other phone is not affected." + warn)) return;
+    sync.stop();
+    data.syncCode = null; data.editKey = null; data.editorUid = null; data.pendingMigrate = false; store.save(data);
+    sync.ui();
   };
 
   function init() {

@@ -1,10 +1,33 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    // Each household lives under a long random code that only the invite link knows.
+    function validCode(s) { return s is string && s.size() >= 20 && s.size() <= 64; }
+    function isEditor(hid) {
+      return request.auth != null && exists(/databases/$(database)/documents/households/$(hid)/editors/$(request.auth.uid));
+    }
+
+    // Each household lives under a long random code that only invite links know.
     // Listing households is not allowed, so the code can't be discovered.
-    match /households/{hid}/{rest=**} {
-      allow read, write: if hid.size() >= 20 && hid.size() <= 64;
+    match /households/{hid} {
+      // Bill months and names: anyone with the code can read; only registered editors can write.
+      match /months/{m} {
+        allow read: if validCode(hid);
+        allow write: if isEditor(hid);
+      }
+      match /meta/{d} {
+        allow read: if validCode(hid);
+        allow write: if isEditor(hid);
+      }
+      // The edit key. Set once by the first editor, never readable, never changeable.
+      match /secret/{d} {
+        allow create: if d == "edit" && request.auth != null && validCode(hid) && validCode(request.resource.data.key);
+      }
+      // A device becomes an editor by proving it knows the edit key.
+      match /editors/{uid} {
+        allow read: if request.auth != null && request.auth.uid == uid;
+        allow create, update: if request.auth != null && request.auth.uid == uid
+          && request.resource.data.key == get(/databases/$(database)/documents/households/$(hid)/secret/edit).data.key;
+      }
     }
   }
 }

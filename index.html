@@ -246,6 +246,15 @@
     <ul class="hist" id="hist"></ul>
   </section>
 
+  <section class="card">
+    <h2>Meter readings <small>taken on the 8th</small></h2>
+    <div class="btns" style="margin-top:0">
+      <button class="btn" id="rdA" type="button"><span class="dot" style="background:var(--a)"></span> <span id="rdAName">Rushikesh</span></button>
+      <button class="btn" id="rdB" type="button"><span class="dot" style="background:var(--b)"></span> <span id="rdBName">Prashant</span></button>
+      <button class="btn full" id="rdMain" type="button">Main meter</button>
+    </div>
+  </section>
+
   <section class="card" id="syncCard" hidden>
     <h2><span class="dot" id="syncDot"></span>Sync between phones <small id="syncStatus"></small></h2>
     <div id="syncOff">
@@ -290,6 +299,7 @@
 </main>
 <dialog id="breakup" aria-labelledby="bdTitle">
   <h2 id="bdTitle">Breakup</h2>
+  <p class="units" id="bdNote" hidden style="margin:-4px 0 10px"></p>
   <div class="bd-scroll"><table id="bdTable"></table></div>
   <div class="btns">
     <button class="btn" id="bdShare" type="button">Share</button>
@@ -351,7 +361,7 @@
     const r = calc();
     const { a: nA, b: nB } = data.names;
     $("subTitle").textContent = `Submeter · ${nA}`;
-    $("nameA").textContent = nA; $("nameB").textContent = nB;
+    $("nameA").textContent = $("rdAName").textContent = nA; $("nameB").textContent = $("rdBName").textContent = nB;
     $("mainUnits").textContent = r.mainU != null ? fmtU(r.mainU) : "–";
     $("subUnits").textContent = r.subU != null ? fmtU(r.subU) : "–";
     $("fixedWrap").hidden = data.mode !== "fixed";
@@ -426,15 +436,69 @@
 
   const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 
-  function showBreakup(e) {
-    const { rows } = breakupRows(e);
-    $("bdTitle").textContent = `Breakup · ${monthLabel(e.month)}`;
-    $("bdTable").innerHTML = `<thead><tr><th>Item</th><th>How</th><th>Amount</th></tr></thead><tbody>` +
-      rows.map(([k, how, val, who]) => `<tr${who ? ` class="pay ${who}"` : ""}><td>${esc(k)}</td><td class="how">${esc(how)}</td><td class="val">${esc(val)}</td></tr>`).join("") +
+  // Shared table dialog. cols: [{ label, cls }]; rows: [{ cells: [...], cls }].
+  function showTable(title, cols, rows, share, note) {
+    $("bdTitle").textContent = title;
+    $("bdNote").textContent = note || ""; $("bdNote").hidden = !note;
+    $("bdTable").innerHTML = `<thead><tr>${cols.map((c) => `<th class="${c.cls || ""}">${esc(c.label)}</th>`).join("")}</tr></thead><tbody>` +
+      rows.map((r) => `<tr class="${r.cls || ""}">${r.cells.map((v, i) => `<td class="${cols[i].cls || ""}">${esc(v)}</td>`).join("")}</tr>`).join("") +
       `</tbody>`;
-    $("bdShare").onclick = () => shareText(summaryText(e));
+    $("bdShare").onclick = () => shareText(share);
     $("breakup").showModal();
   }
+
+  function showBreakup(e) {
+    const { rows } = breakupRows(e);
+    showTable(`Breakup · ${monthLabel(e.month)}`,
+      [{ label: "Item" }, { label: "How", cls: "how" }, { label: "Amount", cls: "val" }],
+      rows.map(([k, how, val, who]) => ({ cells: [k, how, val], cls: who ? `pay ${who}` : "" })),
+      summaryText(e));
+  }
+
+  // Readings are taken on the 8th: a month's current reading is dated the 8th of that bill month,
+  // and its previous reading the 8th of the month before.
+  const readingDate = (m) => {
+    const [y, mo] = m.split("-").map(Number);
+    return `08 ${"Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec".split(" ")[mo - 1]} ${y}`;
+  };
+  const prevMonth = (m) => {
+    const [y, mo] = m.split("-").map(Number);
+    const d = new Date(y, mo - 2, 1);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+  };
+
+  // which: "a" (submeter), "b" (main − submeter), "main"
+  function showReadings(which) {
+    const { a: nA, b: nB } = data.names;
+    const hist = data.history.filter((h) => h.month).sort((x, y) => x.month.localeCompare(y.month));
+    if (!hist.length) { toast("No saved months yet"); return; }
+    const rows = [];
+    // Opening reading before the first saved month.
+    const first = hist[0];
+    const open = { date: readingDate(prevMonth(first.month)), main: first.mainPrev, sub: first.subPrev };
+    const points = [open, ...hist.map((h) => ({ date: readingDate(h.month), main: h.mainCur, sub: h.subCur, h }))];
+    let cols, title, note;
+    if (which === "a") {
+      title = `${nA}'s readings · submeter`;
+      cols = [{ label: "Date" }, { label: "Reading", cls: "val" }, { label: "Units used", cls: "val" }];
+      points.forEach((p) => rows.push({ cells: [p.date, String(p.sub), p.h ? fmtU(p.h.subU) : "first reading"] }));
+    } else if (which === "main") {
+      title = "Main meter readings";
+      cols = [{ label: "Date" }, { label: "Reading", cls: "val" }, { label: "Units used", cls: "val" }];
+      points.forEach((p) => rows.push({ cells: [p.date, String(p.main), p.h ? fmtU(p.h.mainU) : "first reading"] }));
+    } else {
+      title = `${nB}'s usage`;
+      note = `${nB} has no own meter, so units = main meter units − ${nA}'s units.`;
+      cols = [{ label: "Date" }, { label: "Main", cls: "how" }, { label: "Sub", cls: "how" }, { label: "Units used", cls: "val" }];
+      points.forEach((p) => rows.push({ cells: [p.date, String(p.main), String(p.sub), p.h ? `${fmtU(p.h.mainU)} − ${fmtU(p.h.subU)} = ${fmtU(p.h.otherU)}` : "first reading"] }));
+    }
+    rows.reverse(); // newest first
+    const share = [`⚡ ${title}`, ``, ...rows.map((r) => r.cells.join("  |  "))].join("\n");
+    showTable(title, cols, rows, share, note);
+  }
+  $("rdA").onclick = () => showReadings("a");
+  $("rdB").onclick = () => showReadings("b");
+  $("rdMain").onclick = () => showReadings("main");
 
   function summaryText(e) {
     const { rows } = breakupRows(e);

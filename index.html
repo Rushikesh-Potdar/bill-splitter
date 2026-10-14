@@ -159,6 +159,9 @@
   .chips { display: flex; gap: 6px; flex-wrap: wrap; }
   .chip { border: 1px solid var(--line); background: var(--input); color: var(--text); font: inherit; font-size: .8rem; padding: 6px 12px; border-radius: 999px; cursor: pointer; }
   main[hidden] { display: none; }
+  .banner.demo { background: color-mix(in srgb, #7c3aed 14%, transparent); line-height: 1.7; }
+  .banner.demo[hidden] { display: none; }
+  .banner.demo a, .banner.demo button { color: var(--accent); font: inherit; font-weight: 600; background: none; border: 0; padding: 0; cursor: pointer; text-decoration: underline; }
   .page-head { position: sticky; top: 0; z-index: 2; background: var(--bg); padding: 12px 0 8px; }
   .page-head h1 { margin-top: 4px; }
   .back { border: 0; background: none; color: var(--accent); font: inherit; font-size: 1rem; font-weight: 600; padding: 6px 0; cursor: pointer; }
@@ -183,6 +186,8 @@
   <header>
     <h1>⚡ Electricity Bill Splitter</h1>
     <p>Main meter + submeter → who pays what</p>
+    <p class="banner demo" id="demoBanner" hidden>🧪 Demo mode · sample data on this phone only, never synced.
+      <a href="./?demo">Editor demo</a> · <a href="./?demo&viewer">Uncle's view</a> · <button type="button" id="demoReset">Reset</button> · <a href="./">Exit</a></p>
     <p class="banner view-only">👁 View-only · history is shared from <b id="bannerName">Rushikesh</b>'s phone</p>
   </header>
 
@@ -350,12 +355,58 @@
 <script type="module">
 (() => {
   const $ = (id) => document.getElementById(id);
-  const KEY = "ebs.v1";
+  // Demo mode (?demo, or ?demo&viewer for the view-only look): separate storage, sample data, never syncs.
+  const params = new URLSearchParams(location.search);
+  const DEMO = params.has("demo");
+  const DEMO_VIEWER = DEMO && params.has("viewer");
+  const KEY = DEMO ? (DEMO_VIEWER ? "ebs.demo.viewer" : "ebs.demo") : "ebs.v1";
   const store = {
     load() { try { return JSON.parse(localStorage.getItem(KEY)) || {}; } catch { return {}; } },
     save(d) { try { localStorage.setItem(KEY, JSON.stringify(d)); } catch {} },
   };
   let data = Object.assign({ names: { a: "Rushikesh", b: "Prashant" }, mode: "units", draft: {}, history: [], syncCode: null, pendingMigrate: false }, store.load());
+
+  // 14 months of realistic sample bills: summer months use more units, older months are fully paid.
+  function demoData() {
+    const months = [];
+    let main = 18240, sub = 7310;
+    const start = new Date(2025, 8, 1); // Sep 2025 … Oct 2026
+    const subUnits = [150, 140, 120, 115, 125, 150, 185, 210, 205, 170, 160, 165, 155, 160];
+    const otherUnits = [230, 215, 190, 180, 195, 220, 270, 310, 300, 255, 240, 250, 235, 245];
+    const remarks = ["UPI", "Cash", "UPI", "UPI", "Cash", "Bank transfer", "UPI"];
+    subUnits.forEach((su, i) => {
+      const d = new Date(start.getFullYear(), start.getMonth() + i, 1);
+      const month = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+      const ou = otherUnits[i], mu = su + ou;
+      const mode = i === 7 || i === 8 ? "fixed" : "units";
+      const fixed = mode === "fixed" ? 150 : 0;
+      const rate = mu > 400 ? 8.9 : 8.25; // higher slab in heavy months
+      const total = Math.round(mu * rate + 120);
+      const a = Math.round((su * ((total - fixed) / mu) + fixed / 2) * 100) / 100;
+      const b = Math.round((total - a) * 100) / 100;
+      const nd = new Date(d.getFullYear(), d.getMonth() + 1, 1);
+      const paidOn = (day) => `${nd.getFullYear()}-${String(nd.getMonth() + 1).padStart(2, "0")}-0${day}`;
+      const last = i === subUnits.length - 1, prev = i === subUnits.length - 2;
+      const paid = {
+        a: last ? { paid: false, remark: "", date: "" } : { paid: true, remark: remarks[i % remarks.length], date: paidOn(2) },
+        b: last || prev ? { paid: false, remark: "", date: "" } : { paid: true, remark: remarks[(i + 1) % remarks.length], date: paidOn(3) },
+      };
+      months.push({
+        month, total, mainPrev: main, mainCur: main + mu, subPrev: sub, subCur: sub + su,
+        mode, fixed, a, b, subU: su, otherU: ou, mainU: mu, names: { a: "Rushikesh", b: "Prashant" },
+        paid, savedAt: new Date(d.getFullYear(), d.getMonth(), 15).toISOString(),
+      });
+      main += mu; sub += su;
+    });
+    const nx = new Date(start.getFullYear(), start.getMonth() + subUnits.length, 1);
+    return {
+      names: { a: "Rushikesh", b: "Prashant" }, mode: "units", history: months,
+      draft: { month: `${nx.getFullYear()}-${String(nx.getMonth() + 1).padStart(2, "0")}`, mainPrev: String(main), subPrev: String(sub) },
+      // Viewer demo: pretend this phone joined with a view-only link (no network; sync is off in demo).
+      syncCode: DEMO_VIEWER ? "demo-view-only-household" : null, editKey: null, pendingMigrate: false,
+    };
+  }
+  if (DEMO && !data.history.length) { data = Object.assign(data, demoData()); store.save(data); }
 
   const fields = ["month", "total", "mainPrev", "mainCur", "subPrev", "subCur", "fixed"];
   const num = (v) => { const n = parseFloat(v); return Number.isFinite(n) ? n : null; };
@@ -863,7 +914,7 @@
       this.ready = false; this.queue = [];
     },
     async init() {
-      try { this.cfg = (await import("./firebase-config.js")).firebaseConfig || null; } catch { this.cfg = null; }
+      try { this.cfg = DEMO ? null : (await import("./firebase-config.js")).firebaseConfig || null; } catch { this.cfg = null; }
       if (data.syncCode && !("editKey" in data)) {
         // Joined with the old invite (before view-only existed): disconnect, keep local history.
         data.syncCode = null; data.pendingMigrate = false; store.save(data);
@@ -976,6 +1027,16 @@
     data.syncCode = null; data.editKey = null; data.editorUid = null; data.pendingMigrate = false; store.save(data);
     sync.ui();
   };
+
+  if (DEMO) {
+    $("demoBanner").hidden = false;
+    document.title = "Bill Splitter (demo)";
+    $("demoReset").onclick = () => {
+      if (!confirm("Reset the demo to the original sample data?")) return;
+      try { localStorage.removeItem(KEY); } catch {}
+      location.reload();
+    };
+  }
 
   function init() {
     fields.forEach((f) => ($(f).value = data.draft[f] ?? ""));

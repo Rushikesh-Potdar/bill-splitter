@@ -526,7 +526,7 @@
     );
     if (e.paid || e.savedAt) {
       [["a", nA], ["b", nB]].forEach(([k, n]) => {
-        const p = e.paid[k] || {};
+        const p = (e.paid || {})[k] || {};
         rows.push([`${n}'s payment`, p.paid ? [p.remark, p.date && fmtDate(p.date)].filter(Boolean).join(" · ") || "—" : "", p.paid ? "Paid ✓" : "Not paid", p.paid ? "paid-row" : "unpaid-row"]);
       });
     }
@@ -609,7 +609,23 @@
 
   function summaryText(e) {
     const { rows } = breakupRows(e);
-    return [`⚡ Electricity bill – ${monthLabel(e.month)}`, ``, ...rows.map(([k, how, val]) => `${k}: ${val}  (${how})`)].join("\n");
+    const lines = [`⚡ Electricity bill – ${monthLabel(e.month)}`, ``, ...rows.map(([k, how, val]) => `${k}: ${val}` + (how ? `  (${how})` : ""))];
+    // Saved + synced month: add a view-only link that opens the app on this month.
+    const isSaved = data.history.some((h) => h.month && h.month === e.month);
+    if (isSaved && data.syncCode && sync.cfg) lines.push(``, `Open this month in the app (view-only):`, sync.link(false, e.month));
+    return lines.join("\n");
+  }
+
+  // Month opened from a shared link (…#view=CODE&m=YYYY-MM): load it into the form and show its breakup.
+  let pendingMonth = null;
+  function openPendingMonth() {
+    if (!pendingMonth) return;
+    const h = data.history.find((x) => x.month === pendingMonth);
+    if (!h) return; // not loaded yet; try again after the next sync update
+    pendingMonth = null;
+    if (!sync.canEdit()) loadEntry(h); // viewers: prefill the form; never overwrite the editor's draft
+    $("mainPage").scrollIntoView();
+    if (!$("breakup").open && !$("payDlg").open) showBreakup(h);
   }
 
   async function shareText(text) {
@@ -900,7 +916,11 @@
     parse(s) {
       const code = (s.match(/(?:view|join)=([A-Za-z0-9]{20,64})/) || [])[1] || (/^[A-Za-z0-9]{20,64}$/.test(s) ? s : null);
       if (!code) return null;
-      return { code, edit: (s.match(/edit=([A-Za-z0-9]{20,64})/) || [])[1] || null };
+      return {
+        code,
+        edit: (s.match(/edit=([A-Za-z0-9]{20,64})/) || [])[1] || null,
+        month: (s.match(/(?:^|&)m=(\d{4}-\d{2})/) || [])[1] || null,
+      };
     },
     async adopt({ code, edit }) {
       if (code === data.syncCode && (!edit || edit === data.editKey)) return false; // already set up
@@ -922,14 +942,27 @@
         // Joined with the old invite (before view-only existed): disconnect, keep local history.
         data.syncCode = null; data.pendingMigrate = false; store.save(data);
       }
-      const link = this.parse(location.hash.slice(1));
-      if (location.hash) history.replaceState(null, "", location.pathname + location.search);
       this.ui();
-      if (this.cfg && link && !(link.code === data.syncCode && (data.editKey || !link.edit))) {
+      const adopted = await this.handleLink();
+      // A link opened while the app is already open only changes the hash.
+      window.addEventListener("hashchange", () => this.handleLink());
+      if (!adopted && this.cfg && data.syncCode) await this.connect();
+    },
+    // Handles invite / month links in the URL hash. Returns true if it (re)connected sync itself.
+    async handleLink() {
+      const link = this.parse(location.hash.slice(1));
+      if (location.hash) history.replaceState(history.state, "", location.pathname + location.search);
+      if (!link) return false;
+      if (link.month) pendingMonth = link.month;
+      if (this.cfg && !(link.code === data.syncCode && (data.editKey || !link.edit))) {
         const msg = link.edit ? "Open the shared bill history with EDIT access on this phone?" : "Open the shared bill history (view-only) on this phone?";
-        if (confirm(msg)) { await this.adopt(link); toast(link.edit ? "Joined as editor ✓" : "Joined – view-only ✓"); return; }
+        if (confirm(msg)) { await this.adopt(link); toast(link.edit ? "Joined as editor ✓" : "Joined – view-only ✓"); return true; }
+        pendingMonth = null; // declined: don't open a month from a history this phone isn't part of
+        return false;
       }
-      if (this.cfg && data.syncCode) await this.connect();
+      if (!$("allPage").hidden) history.back(); // month links open on the main screen
+      openPendingMonth(); // already on this phone? open it right away
+      return false;
     },
     async load() {
       if (this.db) return;
@@ -977,7 +1010,7 @@
           }
           if (data.pendingMigrate) return; // wait for server data before replacing local history
           data.history = snap.docs.map((d) => d.data());
-          store.save(data); renderHistory(); prefillPrev();
+          store.save(data); renderHistory(); prefillPrev(); openPendingMonth();
           this.status(snap.metadata.fromCache || snap.metadata.hasPendingWrites ? "offline" : "ok");
         }, (e) => this.status("error", e)));
         this.unsubs.push(fs.onSnapshot(this.namesDoc(), (d) => {
@@ -990,9 +1023,9 @@
         }, (e) => this.status("error", e)));
       } catch (e) { this.status("error", e); }
     },
-    link(withEdit) {
+    link(withEdit, month) {
       const base = `${location.origin}${location.pathname}#view=${data.syncCode}`;
-      return withEdit ? `${base}&edit=${data.editKey}` : base;
+      return (withEdit ? `${base}&edit=${data.editKey}` : base) + (month ? `&m=${month}` : "");
     },
   };
 

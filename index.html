@@ -358,7 +358,13 @@
   const $ = (id) => document.getElementById(id);
   // Demo mode (?demo, or ?demo&viewer for the view-only look): separate storage, sample data, never syncs.
   const params = new URLSearchParams(location.search);
-  const DEMO = params.has("demo");
+  // Demo mode is switched off; set DEMO_ENABLED to true to bring back the ?demo links.
+  const DEMO_ENABLED = false;
+  const DEMO = DEMO_ENABLED && params.has("demo");
+  if (!DEMO_ENABLED) {
+    // Remove sample data left on this phone from the demo links.
+    try { localStorage.removeItem("ebs.demo"); localStorage.removeItem("ebs.demo.viewer"); } catch {}
+  }
   // Fixed charges card is hidden for now; set to true to bring back "Fixed split equally".
   // While hidden, every new bill is split fully by units.
   const SHOW_FIXED = false;

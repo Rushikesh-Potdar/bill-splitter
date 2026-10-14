@@ -91,7 +91,8 @@
   .person.b { background: var(--b-soft); }
   .person .name { font-size: .85rem; font-weight: 600; color: var(--a); }
   .person.b .name { color: var(--b); }
-  .person .amt { font-size: 1.6rem; font-weight: 700; margin: 2px 0; font-variant-numeric: tabular-nums; }
+  .person { min-width: 0; }
+  .person .amt { font-size: clamp(1.05rem, 5.2vw, 1.6rem); font-weight: 700; margin: 2px 0; font-variant-numeric: tabular-nums; white-space: nowrap; }
   .person .meta { font-size: .78rem; color: var(--muted); }
   .bar { display: flex; height: 8px; border-radius: 4px; overflow: hidden; margin: 14px 0 6px; background: var(--line); }
   .bar div { height: 100%; transition: width .25s; }
@@ -911,7 +912,7 @@
       $("syncDot").hidden = !on; $("syncStatus").hidden = !on;
       document.body.classList.toggle("viewer", !this.canEdit());
       $("ownerName").textContent = $("bannerName").textContent = data.names.a;
-      $("histNote").textContent = on && this.cfg ? (data.editKey ? "shared, only you can edit" : "view-only") : "saved on this phone";
+      $("histNote").textContent = !this.canEdit() ? "view-only" : on && this.cfg ? "shared, only you can edit" : "saved on this phone";
       renderHistory();
     },
     // Accepts a full invite link or a bare code. Returns { code, edit } or null.

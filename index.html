@@ -123,6 +123,25 @@
   details summary::-webkit-details-marker { display: none; }
   details summary::after { content: "▾"; float: right; color: var(--muted); }
   details[open] summary { margin-bottom: 12px; }
+  .bd-link { display: block; border: 0; background: none; padding: 4px 0 0; color: var(--accent); font: inherit; font-size: .8rem; font-weight: 600; cursor: pointer; }
+  dialog {
+    width: min(520px, calc(100% - 24px)); max-height: calc(100% - 40px);
+    border: 1px solid var(--line); border-radius: 16px; padding: 16px;
+    background: var(--card); color: var(--text);
+  }
+  dialog::backdrop { background: rgba(0,0,0,.45); }
+  .bd-scroll { overflow-x: auto; }
+  #bdTable { width: 100%; border-collapse: collapse; font-size: .85rem; }
+  #bdTable th { text-align: left; font-size: .72rem; text-transform: uppercase; letter-spacing: .03em; color: var(--muted); font-weight: 600; padding: 0 6px 6px; border-bottom: 1px solid var(--line); }
+  #bdTable td { padding: 9px 6px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  #bdTable td.how { color: var(--muted); font-variant-numeric: tabular-nums; }
+  #bdTable td.val, #bdTable th:last-child { text-align: right; white-space: nowrap; font-weight: 600; font-variant-numeric: tabular-nums; }
+  #bdTable tr.pay td { font-weight: 700; }
+  #bdTable tr.pay.a td:first-child, #bdTable tr.pay.a td.val { color: var(--a); }
+  #bdTable tr.pay.b td:first-child, #bdTable tr.pay.b td.val { color: var(--b); }
+  #bdTable tr.pay.a td { background: var(--accent-soft); }
+  #bdTable tr.pay.b td { background: var(--b-soft); }
+  #bdTable tr:last-child td { border-bottom: 0; color: var(--muted); }
   .view-only { display: none; }
   body.viewer .view-only { display: block; }
   body.viewer .edit-only { display: none !important; }
@@ -218,6 +237,7 @@
     <div class="btns">
       <button class="btn primary edit-only" id="saveBtn" type="button">Save month</button>
       <button class="btn" id="shareBtn" type="button">Share</button>
+      <button class="btn full" id="breakupBtn" type="button">📋 View breakup</button>
     </div>
   </section>
 
@@ -268,6 +288,14 @@
     </details>
   </section>
 </main>
+<dialog id="breakup" aria-labelledby="bdTitle">
+  <h2 id="bdTitle">Breakup</h2>
+  <div class="bd-scroll"><table id="bdTable"></table></div>
+  <div class="btns">
+    <button class="btn" id="bdShare" type="button">Share</button>
+    <button class="btn primary" id="bdClose" type="button">Close</button>
+  </div>
+</dialog>
 <div class="toast" id="toast"></div>
 
 <script type="module">
@@ -331,7 +359,7 @@
     document.querySelectorAll(".seg button").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.mode === data.mode)));
 
     $("err").hidden = !r.err; $("err").textContent = r.err || "";
-    $("saveBtn").disabled = $("shareBtn").disabled = !r.ok;
+    $("saveBtn").disabled = $("shareBtn").disabled = $("breakupBtn").disabled = !r.ok;
 
     if (!r.ok) {
       $("amtA").textContent = $("amtB").textContent = "₹0";
@@ -360,18 +388,65 @@
     store.save(data);
   }
 
-  function summaryText(r, month) {
-    const { a: nA, b: nB } = data.names;
-    const lines = [
-      `⚡ Electricity bill – ${monthLabel(month)}`,
-      `Total: ${inr(r.v.total)} for ${fmtU(r.mainU)} units (${inr(r.rate)}/unit)`,
-      ``,
-      `${nA}: ${inr(r.a)} (${fmtU(r.subU)} units)`,
-      `${nB}: ${inr(r.b)} (${fmtU(r.otherU)} units)`,
+  // One shape for the current form result and saved history entries.
+  function entryFromCalc(r, month) {
+    return {
+      month, total: r.v.total, mainPrev: r.v.mainPrev, mainCur: r.v.mainCur, subPrev: r.v.subPrev, subCur: r.v.subCur,
+      mode: data.mode, fixed: r.fixed, a: r.a, b: r.b, subU: r.subU, otherU: r.otherU, mainU: r.mainU,
+      names: { ...data.names },
+    };
+  }
+
+  // Every number in the split, with the sum that produced it.
+  function breakupRows(e) {
+    const { a: nA, b: nB } = e.names || data.names;
+    const fixed = e.mode === "fixed" ? e.fixed || 0 : 0;
+    const energy = e.total - fixed;
+    const rate = energy / e.mainU;
+    const r4 = (Math.round(rate * 10000) / 10000).toLocaleString("en-IN", { maximumFractionDigits: 4 });
+    const plusFixed = fixed ? ` + ${inr(fixed / 2)}` : "";
+    const rows = [
+      ["Total units (main meter)", `${e.mainCur} − ${e.mainPrev}`, `${fmtU(e.mainU)} units`],
+      [`${nA}'s units (submeter)`, `${e.subCur} − ${e.subPrev}`, `${fmtU(e.subU)} units`],
+      [`${nB}'s units`, `${fmtU(e.mainU)} − ${fmtU(e.subU)}`, `${fmtU(e.otherU)} units`],
+      ["Total bill amount", "from the bill", inr(e.total)],
     ];
-    if (data.mode === "fixed") lines.push(``, `Fixed charges ${inr(r.fixed)} split equally.`);
-    lines.push(``, `Main: ${r.v.mainPrev} → ${r.v.mainCur}`, `Submeter: ${r.v.subPrev} → ${r.v.subCur}`);
-    return lines.join("\n");
+    if (fixed) {
+      rows.push(["Fixed charges", "split 50 / 50", `${inr(fixed / 2)} each`]);
+      rows.push(["Bill for units", `${inr(e.total)} − ${inr(fixed)}`, inr(energy)]);
+    }
+    rows.push(
+      ["Rate per unit", `${inr(energy)} ÷ ${fmtU(e.mainU)}`, `₹${r4}`],
+      [`${nA} pays`, `${fmtU(e.subU)} × ₹${r4}${plusFixed}`, inr(e.a), "a"],
+      [`${nB} pays`, `${fmtU(e.otherU)} × ₹${r4}${plusFixed}`, inr(e.b), "b"],
+      ["Check", `${inr(e.a)} + ${inr(e.b)}`, inr(e.a + e.b)],
+    );
+    return { rows, rate: r4, fixed };
+  }
+
+  const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+  function showBreakup(e) {
+    const { rows } = breakupRows(e);
+    $("bdTitle").textContent = `Breakup · ${monthLabel(e.month)}`;
+    $("bdTable").innerHTML = `<thead><tr><th>Item</th><th>How</th><th>Amount</th></tr></thead><tbody>` +
+      rows.map(([k, how, val, who]) => `<tr${who ? ` class="pay ${who}"` : ""}><td>${esc(k)}</td><td class="how">${esc(how)}</td><td class="val">${esc(val)}</td></tr>`).join("") +
+      `</tbody>`;
+    $("bdShare").onclick = () => shareText(summaryText(e));
+    $("breakup").showModal();
+  }
+
+  function summaryText(e) {
+    const { rows } = breakupRows(e);
+    return [`⚡ Electricity bill – ${monthLabel(e.month)}`, ``, ...rows.map(([k, how, val]) => `${k}: ${val}  (${how})`)].join("\n");
+  }
+
+  async function shareText(text) {
+    if (navigator.share) {
+      try { await navigator.share({ text }); return; } catch (err) { if (err.name === "AbortError") return; }
+    }
+    try { await navigator.clipboard.writeText(text); toast("Copied to clipboard"); }
+    catch { window.open("https://wa.me/?text=" + encodeURIComponent(text), "_blank"); }
   }
 
   function renderHistory() {
@@ -381,7 +456,9 @@
     [...data.history].sort((x, y) => (y.month || "").localeCompare(x.month || "")).forEach((h) => {
       const li = document.createElement("li");
       li.innerHTML = `<div class="m"><b>${monthLabel(h.month)} · ${inr(h.total)}</b>
-        <span>${h.names.a} ${inr(h.a)} (${fmtU(h.subU)}u) · ${h.names.b} ${inr(h.b)} (${fmtU(h.otherU)}u)</span></div>`;
+        <span>${esc(h.names.a)} ${inr(h.a)} (${fmtU(h.subU)}u) · ${esc(h.names.b)} ${inr(h.b)} (${fmtU(h.otherU)}u)</span>
+        <button class="bd-link" type="button">View breakup ›</button></div>`;
+      li.querySelector(".bd-link").onclick = () => showBreakup(h);
       const open = document.createElement("button");
       open.className = "x"; open.textContent = "↺"; open.title = "Load into form"; open.setAttribute("aria-label", "Load");
       open.onclick = () => { loadEntry(h); window.scrollTo({ top: 0, behavior: "smooth" }); toast("Loaded " + monthLabel(h.month)); };
@@ -423,11 +500,7 @@
     const r = calc(); if (!r.ok || !sync.canEdit()) return;
     const month = $("month").value;
     if (!month) { toast("Pick the bill month first"); $("month").focus(); return; }
-    const entry = {
-      month, total: r.v.total, mainPrev: r.v.mainPrev, mainCur: r.v.mainCur, subPrev: r.v.subPrev, subCur: r.v.subCur,
-      mode: data.mode, fixed: r.fixed, a: r.a, b: r.b, subU: r.subU, otherU: r.otherU, mainU: r.mainU,
-      names: { ...data.names }, savedAt: new Date().toISOString(),
-    };
+    const entry = { ...entryFromCalc(r, month), savedAt: new Date().toISOString() };
     const i = data.history.findIndex((h) => h.month && h.month === month);
     if (i >= 0) {
       if (!confirm(`${monthLabel(month)} is already saved. Replace it?`)) return;
@@ -442,15 +515,16 @@
     toast(`Saved ${monthLabel(month)} ✓`);
   };
 
-  $("shareBtn").onclick = async () => {
+  $("shareBtn").onclick = () => {
     const r = calc(); if (!r.ok) return;
-    const text = summaryText(r, $("month").value);
-    if (navigator.share) {
-      try { await navigator.share({ text }); return; } catch (e) { if (e.name === "AbortError") return; }
-    }
-    try { await navigator.clipboard.writeText(text); toast("Copied to clipboard"); }
-    catch { window.open("https://wa.me/?text=" + encodeURIComponent(text), "_blank"); }
+    shareText(summaryText(entryFromCalc(r, $("month").value)));
   };
+  $("breakupBtn").onclick = () => {
+    const r = calc(); if (!r.ok) return;
+    showBreakup(entryFromCalc(r, $("month").value));
+  };
+  $("bdClose").onclick = () => $("breakup").close();
+  $("breakup").addEventListener("click", (ev) => { if (ev.target === $("breakup")) $("breakup").close(); });
 
   ["setA", "setB"].forEach((id, i) => $(id).addEventListener("input", (e) => {
     data.names[i ? "b" : "a"] = e.target.value.trim() || (i ? "Prashant" : "Rushikesh");

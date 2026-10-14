@@ -1,0 +1,462 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Bill Splitter</title>
+<meta name="description" content="Split the electricity bill between Rushikesh and Prashant using the main meter and submeter readings.">
+<meta name="theme-color" content="#0f766e">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Bill Split">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon-180.png">
+<style>
+  :root {
+    --bg: #f4f6f5;
+    --card: #ffffff;
+    --text: #18211f;
+    --muted: #5f6b68;
+    --line: #dde3e1;
+    --accent: #0f766e;
+    --accent-soft: #e3f2ef;
+    --a: #0f766e;       /* Rushikesh */
+    --b: #b45309;       /* Prashant */
+    --b-soft: #fbefe2;
+    --danger: #b91c1c;
+    --input: #f9fbfa;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1413;
+      --card: #182120;
+      --text: #e7eeec;
+      --muted: #9aa8a5;
+      --line: #2a3533;
+      --accent: #2dd4bf;
+      --accent-soft: #15302c;
+      --a: #2dd4bf;
+      --b: #f59e0b;
+      --b-soft: #33270f;
+      --danger: #f87171;
+      --input: #111817;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 16px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    padding: env(safe-area-inset-top) 0 calc(24px + env(safe-area-inset-bottom));
+  }
+  main { max-width: 560px; margin: 0 auto; padding: 0 16px; }
+  header { padding: 20px 0 8px; }
+  h1 { font-size: 1.4rem; margin: 0; }
+  header p { margin: 2px 0 0; color: var(--muted); font-size: .9rem; }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    padding: 16px;
+    margin: 14px 0;
+  }
+  h2 { font-size: 1rem; margin: 0 0 12px; display: flex; align-items: center; gap: 8px; }
+  h2 small { font-weight: 400; color: var(--muted); font-size: .8rem; margin-left: auto; }
+  .row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  label { display: block; font-size: .8rem; color: var(--muted); margin-bottom: 10px; }
+  label span.hint { display: block; font-size: .72rem; }
+  input, select {
+    display: block; width: 100%; margin-top: 4px;
+    font: inherit; font-size: 16px; /* prevents iOS zoom */
+    color: var(--text); background: var(--input);
+    border: 1px solid var(--line); border-radius: 10px;
+    padding: 11px 12px;
+    appearance: none; -webkit-appearance: none;
+  }
+  input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: 0; border-color: transparent; }
+  .units { font-size: .85rem; color: var(--muted); margin: -2px 0 0; }
+  .units b { color: var(--text); }
+  .err { color: var(--danger); font-size: .85rem; margin: 8px 0 0; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; flex: none; }
+  .seg { display: flex; background: var(--input); border: 1px solid var(--line); border-radius: 10px; padding: 3px; margin-bottom: 12px; }
+  .seg button { flex: 1; border: 0; background: none; color: var(--muted); font: inherit; font-size: .85rem; padding: 8px 6px; border-radius: 8px; }
+  .seg button[aria-pressed="true"] { background: var(--card); color: var(--text); font-weight: 600; box-shadow: 0 1px 2px rgba(0,0,0,.12); }
+
+  .result { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .person { border-radius: 12px; padding: 14px; background: var(--accent-soft); }
+  .person.b { background: var(--b-soft); }
+  .person .name { font-size: .85rem; font-weight: 600; color: var(--a); }
+  .person.b .name { color: var(--b); }
+  .person .amt { font-size: 1.6rem; font-weight: 700; margin: 2px 0; font-variant-numeric: tabular-nums; }
+  .person .meta { font-size: .78rem; color: var(--muted); }
+  .bar { display: flex; height: 8px; border-radius: 4px; overflow: hidden; margin: 14px 0 6px; background: var(--line); }
+  .bar div { height: 100%; transition: width .25s; }
+  .breakdown { font-size: .85rem; color: var(--muted); }
+  .breakdown div { display: flex; justify-content: space-between; padding: 3px 0; }
+  .breakdown b { color: var(--text); font-weight: 500; font-variant-numeric: tabular-nums; }
+
+  .btns { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 14px; }
+  .btn {
+    font: inherit; font-size: .95rem; font-weight: 600;
+    border-radius: 10px; padding: 12px; border: 1px solid var(--line);
+    background: var(--card); color: var(--text); cursor: pointer;
+  }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  @media (prefers-color-scheme: dark) { .btn.primary { color: #062420; } }
+  .btn.full { grid-column: 1 / -1; }
+  .btn:disabled { opacity: .45; }
+  .btn.link { border: 0; background: none; color: var(--danger); font-weight: 500; padding: 6px; font-size: .85rem; }
+
+  .hist { list-style: none; margin: 0; padding: 0; }
+  .hist li { border-top: 1px solid var(--line); padding: 10px 0; display: flex; gap: 10px; align-items: center; }
+  .hist li:first-child { border-top: 0; }
+  .hist .m { flex: 1; min-width: 0; }
+  .hist .m b { display: block; font-size: .92rem; }
+  .hist .m span { font-size: .78rem; color: var(--muted); }
+  .hist .x { border: 0; background: none; color: var(--muted); font-size: 1.2rem; padding: 4px 8px; cursor: pointer; }
+  .empty { color: var(--muted); font-size: .88rem; margin: 0; }
+  details summary { cursor: pointer; font-weight: 600; font-size: 1rem; list-style: none; }
+  details summary::-webkit-details-marker { display: none; }
+  details summary::after { content: "▾"; float: right; color: var(--muted); }
+  details[open] summary { margin-bottom: 12px; }
+  .toast {
+    position: fixed; left: 50%; bottom: calc(20px + env(safe-area-inset-bottom));
+    transform: translateX(-50%) translateY(20px); opacity: 0;
+    background: var(--text); color: var(--bg); padding: 10px 16px; border-radius: 10px;
+    font-size: .9rem; transition: .2s; pointer-events: none; max-width: calc(100% - 32px);
+  }
+  .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>⚡ Electricity Bill Splitter</h1>
+    <p>Main meter + submeter → who pays what</p>
+  </header>
+
+  <section class="card">
+    <h2>Bill</h2>
+    <div class="row">
+      <label>Bill month
+        <input type="month" id="month">
+      </label>
+      <label>Total bill (₹)
+        <input type="number" id="total" inputmode="decimal" step="0.01" min="0" placeholder="e.g. 3450">
+      </label>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Main meter <small>whole building</small></h2>
+    <div class="row">
+      <label>Previous reading
+        <input type="number" id="mainPrev" inputmode="decimal" step="any" min="0">
+      </label>
+      <label>Current reading
+        <input type="number" id="mainCur" inputmode="decimal" step="any" min="0">
+      </label>
+    </div>
+    <p class="units">Units used: <b id="mainUnits">–</b></p>
+  </section>
+
+  <section class="card">
+    <h2><span class="dot" style="background:var(--a)"></span><span id="subTitle">Submeter</span></h2>
+    <div class="row">
+      <label>Previous reading
+        <input type="number" id="subPrev" inputmode="decimal" step="any" min="0">
+      </label>
+      <label>Current reading
+        <input type="number" id="subCur" inputmode="decimal" step="any" min="0">
+      </label>
+    </div>
+    <p class="units">Units used: <b id="subUnits">–</b></p>
+  </section>
+
+  <section class="card">
+    <h2>Fixed charges</h2>
+    <div class="seg" role="group" aria-label="How to split">
+      <button type="button" data-mode="units" aria-pressed="true">All by units</button>
+      <button type="button" data-mode="fixed" aria-pressed="false">Fixed split equally</button>
+    </div>
+    <div id="fixedWrap" hidden>
+      <label>Fixed / meter charges on the bill (₹)
+        <span class="hint">Split 50 / 50. The rest is split by units used.</span>
+        <input type="number" id="fixed" inputmode="decimal" step="0.01" min="0" placeholder="e.g. 150">
+      </label>
+    </div>
+    <p class="units" id="modeHint">Whole bill is divided by units each house used.</p>
+  </section>
+
+  <section class="card" id="resultCard">
+    <h2>Split</h2>
+    <div class="result">
+      <div class="person a">
+        <div class="name" id="nameA">Rushikesh</div>
+        <div class="amt" id="amtA">₹0</div>
+        <div class="meta" id="metaA">0 units</div>
+      </div>
+      <div class="person b">
+        <div class="name" id="nameB">Prashant</div>
+        <div class="amt" id="amtB">₹0</div>
+        <div class="meta" id="metaB">0 units</div>
+      </div>
+    </div>
+    <div class="bar"><div id="barA" style="background:var(--a);width:50%"></div><div id="barB" style="background:var(--b);width:50%"></div></div>
+    <div class="breakdown" id="breakdown"></div>
+    <p class="err" id="err" hidden></p>
+    <div class="btns">
+      <button class="btn primary" id="saveBtn" type="button">Save month</button>
+      <button class="btn" id="shareBtn" type="button">Share</button>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>History <small>saved on this phone</small></h2>
+    <ul class="hist" id="hist"></ul>
+  </section>
+
+  <section class="card">
+    <details>
+      <summary>Settings</summary>
+      <label>Person on the submeter
+        <input type="text" id="setA" autocomplete="off">
+      </label>
+      <label>Other person (main − submeter)
+        <input type="text" id="setB" autocomplete="off">
+      </label>
+      <div class="btns">
+        <button class="btn" id="exportBtn" type="button">Backup history</button>
+        <button class="btn" id="importBtn" type="button">Restore backup</button>
+        <input type="file" id="importFile" accept="application/json,.json" hidden>
+      </div>
+      <div class="btns"><button class="btn link full" id="clearBtn" type="button">Clear current form</button></div>
+    </details>
+  </section>
+</main>
+<div class="toast" id="toast"></div>
+
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const KEY = "ebs.v1";
+  const store = {
+    load() { try { return JSON.parse(localStorage.getItem(KEY)) || {}; } catch { return {}; } },
+    save(d) { try { localStorage.setItem(KEY, JSON.stringify(d)); } catch {} },
+  };
+  let data = Object.assign({ names: { a: "Rushikesh", b: "Prashant" }, mode: "units", draft: {}, history: [] }, store.load());
+
+  const fields = ["month", "total", "mainPrev", "mainCur", "subPrev", "subCur", "fixed"];
+  const num = (v) => { const n = parseFloat(v); return Number.isFinite(n) ? n : null; };
+  const inr = (n) => "₹" + n.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const fmtU = (n) => (Math.round(n * 100) / 100).toLocaleString("en-IN");
+  const monthLabel = (m) => {
+    if (!m) return "Untitled";
+    const [y, mo] = m.split("-").map(Number);
+    return new Date(y, mo - 1, 1).toLocaleDateString("en-IN", { month: "long", year: "numeric" });
+  };
+
+  function toast(msg) {
+    const t = $("toast"); t.textContent = msg; t.classList.add("show");
+    clearTimeout(toast.t); toast.t = setTimeout(() => t.classList.remove("show"), 2000);
+  }
+
+  function calc() {
+    const v = Object.fromEntries(fields.map((f) => [f, num($(f).value)]));
+    const out = { ok: false, v };
+    const mainU = v.mainPrev != null && v.mainCur != null ? v.mainCur - v.mainPrev : null;
+    const subU = v.subPrev != null && v.subCur != null ? v.subCur - v.subPrev : null;
+    out.mainU = mainU; out.subU = subU;
+
+    if (mainU != null && mainU < 0) return { ...out, err: "Main meter current reading is lower than previous." };
+    if (subU != null && subU < 0) return { ...out, err: "Submeter current reading is lower than previous." };
+    if (mainU == null || subU == null || v.total == null) return out;
+    if (mainU === 0) return { ...out, err: "Main meter shows 0 units used." };
+    if (subU > mainU) return { ...out, err: "Submeter used more units than the main meter. Check the readings." };
+
+    const otherU = mainU - subU;
+    const fixed = data.mode === "fixed" ? (v.fixed || 0) : 0;
+    if (fixed > v.total) return { ...out, err: "Fixed charges are more than the total bill." };
+    const energy = v.total - fixed;
+    const rate = energy / mainU;
+    let a = subU * rate + fixed / 2;
+    a = Math.round(a * 100) / 100;
+    const b = Math.round((v.total - a) * 100) / 100; // ensures a + b === total exactly
+    return { ...out, ok: true, otherU, fixed, energy, rate, a, b };
+  }
+
+  function render() {
+    const r = calc();
+    const { a: nA, b: nB } = data.names;
+    $("subTitle").textContent = `Submeter · ${nA}`;
+    $("nameA").textContent = nA; $("nameB").textContent = nB;
+    $("mainUnits").textContent = r.mainU != null ? fmtU(r.mainU) : "–";
+    $("subUnits").textContent = r.subU != null ? fmtU(r.subU) : "–";
+    $("fixedWrap").hidden = data.mode !== "fixed";
+    $("modeHint").hidden = data.mode !== "units";
+    document.querySelectorAll(".seg button").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.mode === data.mode)));
+
+    $("err").hidden = !r.err; $("err").textContent = r.err || "";
+    $("saveBtn").disabled = $("shareBtn").disabled = !r.ok;
+
+    if (!r.ok) {
+      $("amtA").textContent = $("amtB").textContent = "₹0";
+      $("metaA").textContent = $("metaB").textContent = "Enter readings";
+      $("barA").style.width = $("barB").style.width = "50%";
+      $("breakdown").innerHTML = "";
+      return r;
+    }
+    $("amtA").textContent = inr(r.a); $("amtB").textContent = inr(r.b);
+    const pA = (r.subU / r.mainU) * 100;
+    $("metaA").textContent = `${fmtU(r.subU)} units · ${pA.toFixed(1)}%`;
+    $("metaB").textContent = `${fmtU(r.otherU)} units · ${(100 - pA).toFixed(1)}%`;
+    $("barA").style.width = pA + "%"; $("barB").style.width = (100 - pA) + "%";
+    const rows = [
+      ["Total units (main)", fmtU(r.mainU)],
+      ["Rate per unit", inr(r.rate)],
+    ];
+    if (data.mode === "fixed") rows.push(["Fixed charges each", inr(r.fixed / 2)]);
+    rows.push(["Total bill", inr(r.v.total)]);
+    $("breakdown").innerHTML = rows.map(([k, val]) => `<div><span>${k}</span><b>${val}</b></div>`).join("");
+    return r;
+  }
+
+  function persistDraft() {
+    data.draft = Object.fromEntries(fields.map((f) => [f, $(f).value]));
+    store.save(data);
+  }
+
+  function summaryText(r, month) {
+    const { a: nA, b: nB } = data.names;
+    const lines = [
+      `⚡ Electricity bill – ${monthLabel(month)}`,
+      `Total: ${inr(r.v.total)} for ${fmtU(r.mainU)} units (${inr(r.rate)}/unit)`,
+      ``,
+      `${nA}: ${inr(r.a)} (${fmtU(r.subU)} units)`,
+      `${nB}: ${inr(r.b)} (${fmtU(r.otherU)} units)`,
+    ];
+    if (data.mode === "fixed") lines.push(``, `Fixed charges ${inr(r.fixed)} split equally.`);
+    lines.push(``, `Main: ${r.v.mainPrev} → ${r.v.mainCur}`, `Submeter: ${r.v.subPrev} → ${r.v.subCur}`);
+    return lines.join("\n");
+  }
+
+  function renderHistory() {
+    const ul = $("hist");
+    if (!data.history.length) { ul.innerHTML = `<li><p class="empty">No saved months yet. Saved months pre-fill next month's previous readings.</p></li>`; return; }
+    ul.innerHTML = "";
+    [...data.history].sort((x, y) => (y.month || "").localeCompare(x.month || "")).forEach((h) => {
+      const li = document.createElement("li");
+      li.innerHTML = `<div class="m"><b>${monthLabel(h.month)} · ${inr(h.total)}</b>
+        <span>${h.names.a} ${inr(h.a)} (${fmtU(h.subU)}u) · ${h.names.b} ${inr(h.b)} (${fmtU(h.otherU)}u)</span></div>`;
+      const open = document.createElement("button");
+      open.className = "x"; open.textContent = "↺"; open.title = "Load into form"; open.setAttribute("aria-label", "Load");
+      open.onclick = () => { loadEntry(h); window.scrollTo({ top: 0, behavior: "smooth" }); toast("Loaded " + monthLabel(h.month)); };
+      const del = document.createElement("button");
+      del.className = "x"; del.textContent = "×"; del.title = "Delete"; del.setAttribute("aria-label", "Delete");
+      del.onclick = () => {
+        if (!confirm(`Delete ${monthLabel(h.month)}?`)) return;
+        data.history = data.history.filter((x) => x !== h); store.save(data); renderHistory();
+      };
+      li.append(open, del); ul.append(li);
+    });
+  }
+
+  function loadEntry(h) {
+    $("month").value = h.month || ""; $("total").value = h.total;
+    $("mainPrev").value = h.mainPrev; $("mainCur").value = h.mainCur;
+    $("subPrev").value = h.subPrev; $("subCur").value = h.subCur;
+    $("fixed").value = h.fixed || "";
+    data.mode = h.mode || "units";
+    persistDraft(); render();
+  }
+
+  function nextMonth(m) {
+    const [y, mo] = m.split("-").map(Number);
+    const d = new Date(y, mo, 1);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+  }
+
+  // ---- events
+  fields.forEach((f) => $(f).addEventListener("input", () => { persistDraft(); render(); }));
+  document.querySelectorAll(".seg button").forEach((b) => b.addEventListener("click", () => {
+    data.mode = b.dataset.mode; store.save(data); render();
+  }));
+
+  $("saveBtn").onclick = () => {
+    const r = calc(); if (!r.ok) return;
+    const month = $("month").value;
+    const entry = {
+      month, total: r.v.total, mainPrev: r.v.mainPrev, mainCur: r.v.mainCur, subPrev: r.v.subPrev, subCur: r.v.subCur,
+      mode: data.mode, fixed: r.fixed, a: r.a, b: r.b, subU: r.subU, otherU: r.otherU, mainU: r.mainU,
+      names: { ...data.names }, savedAt: new Date().toISOString(),
+    };
+    const i = data.history.findIndex((h) => h.month && h.month === month);
+    if (i >= 0) {
+      if (!confirm(`${monthLabel(month)} is already saved. Replace it?`)) return;
+      data.history[i] = entry;
+    } else data.history.push(entry);
+    // Start next month: current readings become previous readings.
+    $("month").value = month ? nextMonth(month) : "";
+    $("mainPrev").value = r.v.mainCur; $("subPrev").value = r.v.subCur;
+    ["total", "mainCur", "subCur"].forEach((f) => ($(f).value = ""));
+    persistDraft(); renderHistory(); render();
+    toast(`Saved ${monthLabel(month)} ✓`);
+  };
+
+  $("shareBtn").onclick = async () => {
+    const r = calc(); if (!r.ok) return;
+    const text = summaryText(r, $("month").value);
+    if (navigator.share) {
+      try { await navigator.share({ text }); return; } catch (e) { if (e.name === "AbortError") return; }
+    }
+    try { await navigator.clipboard.writeText(text); toast("Copied to clipboard"); }
+    catch { window.open("https://wa.me/?text=" + encodeURIComponent(text), "_blank"); }
+  };
+
+  ["setA", "setB"].forEach((id, i) => $(id).addEventListener("input", (e) => {
+    data.names[i ? "b" : "a"] = e.target.value.trim() || (i ? "Prashant" : "Rushikesh");
+    store.save(data); render();
+  }));
+
+  $("clearBtn").onclick = () => {
+    if (!confirm("Clear all fields in the form? (History is kept.)")) return;
+    fields.forEach((f) => ($(f).value = "")); persistDraft(); render();
+  };
+
+  $("exportBtn").onclick = () => {
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `bill-splitter-backup-${new Date().toISOString().slice(0, 10)}.json`;
+    a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  };
+  $("importBtn").onclick = () => $("importFile").click();
+  $("importFile").onchange = async (e) => {
+    const file = e.target.files[0]; if (!file) return;
+    try {
+      const d = JSON.parse(await file.text());
+      if (!Array.isArray(d.history)) throw new Error();
+      if (!confirm(`Restore ${d.history.length} saved month(s)? This replaces current history.`)) return;
+      data = Object.assign(data, d); store.save(data); init(); toast("Backup restored");
+    } catch { alert("That file isn't a valid backup."); }
+    e.target.value = "";
+  };
+
+  function init() {
+    fields.forEach((f) => ($(f).value = data.draft[f] ?? ""));
+    if (!$("month").value) {
+      const d = new Date();
+      $("month").value = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+    }
+    $("setA").value = data.names.a; $("setB").value = data.names.b;
+    renderHistory(); render();
+  }
+  init();
+})();
+</script>
+</body>
+</html>

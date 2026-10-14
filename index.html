@@ -158,6 +158,10 @@
   .pay-box .row label { margin-bottom: 8px; }
   .chips { display: flex; gap: 6px; flex-wrap: wrap; }
   .chip { border: 1px solid var(--line); background: var(--input); color: var(--text); font: inherit; font-size: .8rem; padding: 6px 12px; border-radius: 999px; cursor: pointer; }
+  main[hidden] { display: none; }
+  .page-head { position: sticky; top: 0; z-index: 2; background: var(--bg); padding: 12px 0 8px; }
+  .page-head h1 { margin-top: 4px; }
+  .back { border: 0; background: none; color: var(--accent); font: inherit; font-size: 1rem; font-weight: 600; padding: 6px 0; cursor: pointer; }
   .hist li.more { display: block; padding-bottom: 0; }
   .hist li.more .btn { width: 100%; }
   .view-only { display: none; }
@@ -175,7 +179,7 @@
 </style>
 </head>
 <body>
-<main>
+<main id="mainPage">
   <header>
     <h1>⚡ Electricity Bill Splitter</h1>
     <p>Main meter + submeter → who pays what</p>
@@ -314,6 +318,14 @@
       <div class="btns"><button class="btn link full" id="clearBtn" type="button">Clear current form</button></div>
     </details>
   </section>
+</main>
+<main id="allPage" hidden>
+  <header class="page-head">
+    <button type="button" class="back" id="allBack" aria-label="Back">‹ Back</button>
+    <h1>All history</h1>
+    <p id="allSummary"></p>
+  </header>
+  <div id="allList"></div>
 </main>
 <dialog id="payDlg" aria-labelledby="payTitle">
   <h2 id="payTitle">Payment</h2>
@@ -554,48 +566,92 @@
     catch { window.open("https://wa.me/?text=" + encodeURIComponent(text), "_blank"); }
   }
 
+  const SHOW = 3; // months on the main screen; the rest are on the All history page
+
+  function historyItem(h) {
+    const li = document.createElement("li");
+    const badge = (k) => {
+      const p = (h.paid || {})[k] || {};
+      return `<span class="badge ${p.paid ? "paid" : "unpaid"}">${esc(h.names[k])}: ${p.paid ? "Paid ✓" + (p.remark ? " · " + esc(p.remark) : "") : "Not paid"}</span>`;
+    };
+    li.innerHTML = `<div class="m"><b>${monthLabel(h.month)} · ${inr(h.total)}</b>
+      <span>${esc(h.names.a)} ${inr(h.a)} (${fmtU(h.subU)}u) · ${esc(h.names.b)} ${inr(h.b)} (${fmtU(h.otherU)}u)</span>
+      <div class="badges">${badge("a")}${badge("b")}</div>
+      <div class="links"><button class="bd-link" type="button">View breakup ›</button>${sync.canEdit() ? `<button class="bd-link pay-link" type="button">Mark as paid ›</button>` : ""}</div></div>`;
+    li.querySelector(".bd-link").onclick = () => showBreakup(h);
+    li.querySelector(".pay-link")?.addEventListener("click", () => showPay(h));
+    const open = document.createElement("button");
+    open.className = "x"; open.textContent = "↺"; open.title = "Load into form"; open.setAttribute("aria-label", "Load");
+    open.onclick = () => {
+      if (!$("allPage").hidden) history.back();
+      loadEntry(h); window.scrollTo({ top: 0, behavior: "smooth" }); toast("Loaded " + monthLabel(h.month));
+    };
+    const del = document.createElement("button");
+    del.className = "x"; del.textContent = "×"; del.title = "Delete"; del.setAttribute("aria-label", "Delete");
+    del.onclick = () => {
+      if (!confirm(`Delete ${monthLabel(h.month)}?${sync.on() ? " (Also deletes it on the other phone.)" : ""}`)) return;
+      data.history = data.history.filter((x) => x !== h); store.save(data); renderHistory();
+      sync.remove(h.month);
+    };
+    li.append(open);
+    if (sync.canEdit()) li.append(del);
+    return li;
+  }
+
   function renderHistory() {
-    const ul = $("hist");
-    if (!data.history.length) { ul.innerHTML = `<li><p class="empty">No saved months yet. Saved months pre-fill next month's previous readings.</p></li>`; return; }
-    ul.innerHTML = "";
     const sorted = [...data.history].sort((x, y) => (y.month || "").localeCompare(x.month || ""));
-    const SHOW = 3;
-    sorted.slice(0, renderHistory.all ? sorted.length : SHOW).forEach((h) => {
-      const li = document.createElement("li");
-      const badge = (k) => {
-        const p = (h.paid || {})[k] || {};
-        return `<span class="badge ${p.paid ? "paid" : "unpaid"}">${esc(h.names[k])}: ${p.paid ? "Paid ✓" + (p.remark ? " · " + esc(p.remark) : "") : "Not paid"}</span>`;
-      };
-      li.innerHTML = `<div class="m"><b>${monthLabel(h.month)} · ${inr(h.total)}</b>
-        <span>${esc(h.names.a)} ${inr(h.a)} (${fmtU(h.subU)}u) · ${esc(h.names.b)} ${inr(h.b)} (${fmtU(h.otherU)}u)</span>
-        <div class="badges">${badge("a")}${badge("b")}</div>
-        <div class="links"><button class="bd-link" type="button">View breakup ›</button>${sync.canEdit() ? `<button class="bd-link pay-link" type="button">Mark as paid ›</button>` : ""}</div></div>`;
-      li.querySelector(".bd-link").onclick = () => showBreakup(h);
-      li.querySelector(".pay-link")?.addEventListener("click", () => showPay(h));
-      const open = document.createElement("button");
-      open.className = "x"; open.textContent = "↺"; open.title = "Load into form"; open.setAttribute("aria-label", "Load");
-      open.onclick = () => { loadEntry(h); window.scrollTo({ top: 0, behavior: "smooth" }); toast("Loaded " + monthLabel(h.month)); };
-      const del = document.createElement("button");
-      del.className = "x"; del.textContent = "×"; del.title = "Delete"; del.setAttribute("aria-label", "Delete");
-      del.onclick = () => {
-        if (!confirm(`Delete ${monthLabel(h.month)}?${sync.on() ? " (Also deletes it on the other phone.)" : ""}`)) return;
-        data.history = data.history.filter((x) => x !== h); store.save(data); renderHistory();
-        sync.remove(h.month);
-      };
-      li.append(open);
-      if (sync.canEdit()) li.append(del);
-      ul.append(li);
-    });
+    const ul = $("hist");
+    ul.innerHTML = "";
+    if (!sorted.length) ul.innerHTML = `<li><p class="empty">No saved months yet. Saved months pre-fill next month's previous readings.</p></li>`;
+    sorted.slice(0, SHOW).forEach((h) => ul.append(historyItem(h)));
     if (sorted.length > SHOW) {
       const li = document.createElement("li");
       li.className = "more";
-      const b = document.createElement("button");
-      b.type = "button"; b.className = "btn full";
-      b.textContent = renderHistory.all ? "Show latest 3 only" : `Show all (${sorted.length} months)`;
-      b.onclick = () => { renderHistory.all = !renderHistory.all; renderHistory(); if (!renderHistory.all) $("hist").closest("section").scrollIntoView({ behavior: "smooth" }); };
-      li.append(b); ul.append(li);
+      li.innerHTML = `<button type="button" class="btn full">Show all (${sorted.length} months) ›</button>`;
+      li.firstChild.onclick = openAllPage;
+      ul.append(li);
+    }
+    if (!$("allPage").hidden) renderAllPage(sorted);
+  }
+
+  // ---- All history page (its own screen; the phone's back button returns to the main screen)
+  function renderAllPage(sorted) {
+    const box = $("allList");
+    box.innerHTML = "";
+    const unpaid = sorted.reduce((n, h) => n + ["a", "b"].filter((k) => !((h.paid || {})[k] || {}).paid).length, 0);
+    $("allSummary").textContent = `${sorted.length} month${sorted.length === 1 ? "" : "s"} saved` + (unpaid ? ` · ${unpaid} payment${unpaid === 1 ? "" : "s"} not marked paid` : " · all paid ✓");
+    let year = null, ul = null;
+    sorted.forEach((h) => {
+      const y = (h.month || "").slice(0, 4);
+      if (y !== year) {
+        year = y;
+        const sec = document.createElement("section");
+        sec.className = "card";
+        const total = sorted.filter((x) => (x.month || "").startsWith(y)).reduce((s, x) => s + x.total, 0);
+        sec.innerHTML = `<h2>${esc(y || "Undated")} <small>${inr(total)} total</small></h2><ul class="hist"></ul>`;
+        box.append(sec);
+        ul = sec.querySelector("ul");
+      }
+      ul.append(historyItem(h));
+    });
+  }
+  function openAllPage() {
+    history.pushState({ page: "all" }, "");
+    showAllPage(true);
+  }
+  function showAllPage(on) {
+    $("allPage").hidden = !on;
+    $("mainPage").hidden = on;
+    if (on) {
+      renderAllPage([...data.history].sort((x, y) => (y.month || "").localeCompare(x.month || "")));
+      showAllPage.y = window.scrollY;
+      window.scrollTo(0, 0);
+    } else {
+      window.scrollTo(0, showAllPage.y || 0);
     }
   }
+  window.addEventListener("popstate", () => { if (!$("allPage").hidden) showAllPage(false); });
+  $("allBack").onclick = () => history.back();
 
   const fmtDate = (iso) => {
     const [y, m, d] = iso.split("-").map(Number);

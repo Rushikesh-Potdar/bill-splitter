@@ -613,6 +613,8 @@
     // Saved + synced month: add a view-only link that opens the app on this month.
     const isSaved = data.history.some((h) => h.month && h.month === e.month);
     if (isSaved && data.syncCode && sync.cfg) lines.push(``, `Open this month in the app (view-only):`, sync.link(false, e.month));
+    // Demo: link to Uncle's view demo on the same month (works on the same phone; demo data never syncs).
+    if (isSaved && DEMO) lines.push(``, `Open this month in Uncle's view (demo):`, `${location.origin}${location.pathname}?demo&viewer#m=${e.month}`);
     return lines.join("\n");
   }
 
@@ -950,9 +952,15 @@
     },
     // Handles invite / month links in the URL hash. Returns true if it (re)connected sync itself.
     async handleLink() {
-      const link = this.parse(location.hash.slice(1));
+      const hash = location.hash.slice(1);
+      const demoMonth = DEMO && (hash.match(/(?:^|&)m=(\d{4}-\d{2})/) || [])[1];
+      const link = this.parse(hash) || (demoMonth ? { month: demoMonth } : null);
       if (location.hash) history.replaceState(history.state, "", location.pathname + location.search);
       if (!link) return false;
+      if (DEMO && link.month && !data.history.some((h) => h.month === link.month)) {
+        toast(`${monthLabel(link.month)} isn't in this demo – tap Reset in the banner`);
+        return false;
+      }
       if (link.month) pendingMonth = link.month;
       if (this.cfg && !(link.code === data.syncCode && (data.editKey || !link.edit))) {
         const msg = link.edit ? "Open the shared bill history with EDIT access on this phone?" : "Open the shared bill history (view-only) on this phone?";

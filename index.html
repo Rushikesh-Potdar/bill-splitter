@@ -216,8 +216,28 @@
   </section>
 
   <section class="card">
-    <h2>History <small>saved on this phone</small></h2>
+    <h2>History <small id="histNote">saved on this phone</small></h2>
     <ul class="hist" id="hist"></ul>
+  </section>
+
+  <section class="card" id="syncCard" hidden>
+    <h2><span class="dot" id="syncDot"></span>Sync between phones <small id="syncStatus"></small></h2>
+    <div id="syncOff">
+      <p class="units">Share the same history with the other phone. Start on one phone, then send the invite link to the other.</p>
+      <div class="btns"><button class="btn primary full" id="syncStartBtn" type="button">Start syncing</button></div>
+      <label style="margin-top:14px">Or paste an invite code
+        <input type="text" id="joinCode" autocomplete="off" autocapitalize="off" spellcheck="false">
+      </label>
+      <div class="btns"><button class="btn full" id="joinBtn" type="button">Join</button></div>
+    </div>
+    <div id="syncOn" hidden>
+      <p class="units">Both phones see the same saved months and names. Send the invite link to the other phone once.</p>
+      <div class="btns">
+        <button class="btn primary" id="inviteBtn" type="button">Send invite</button>
+        <button class="btn" id="copyCodeBtn" type="button">Copy code</button>
+      </div>
+      <div class="btns"><button class="btn link full" id="leaveBtn" type="button">Stop syncing on this phone</button></div>
+    </div>
   </section>
 
   <section class="card">
@@ -240,7 +260,7 @@
 </main>
 <div class="toast" id="toast"></div>
 
-<script>
+<script type="module">
 (() => {
   const $ = (id) => document.getElementById(id);
   const KEY = "ebs.v1";
@@ -248,7 +268,7 @@
     load() { try { return JSON.parse(localStorage.getItem(KEY)) || {}; } catch { return {}; } },
     save(d) { try { localStorage.setItem(KEY, JSON.stringify(d)); } catch {} },
   };
-  let data = Object.assign({ names: { a: "Rushikesh", b: "Prashant" }, mode: "units", draft: {}, history: [] }, store.load());
+  let data = Object.assign({ names: { a: "Rushikesh", b: "Prashant" }, mode: "units", draft: {}, history: [], syncCode: null, pendingMigrate: false }, store.load());
 
   const fields = ["month", "total", "mainPrev", "mainCur", "subPrev", "subCur", "fixed"];
   const num = (v) => { const n = parseFloat(v); return Number.isFinite(n) ? n : null; };
@@ -358,8 +378,9 @@
       const del = document.createElement("button");
       del.className = "x"; del.textContent = "×"; del.title = "Delete"; del.setAttribute("aria-label", "Delete");
       del.onclick = () => {
-        if (!confirm(`Delete ${monthLabel(h.month)}?`)) return;
+        if (!confirm(`Delete ${monthLabel(h.month)}?${sync.on() ? " (Also deletes it on the other phone.)" : ""}`)) return;
         data.history = data.history.filter((x) => x !== h); store.save(data); renderHistory();
+        sync.remove(h.month);
       };
       li.append(open, del); ul.append(li);
     });
@@ -389,6 +410,7 @@
   $("saveBtn").onclick = () => {
     const r = calc(); if (!r.ok) return;
     const month = $("month").value;
+    if (!month) { toast("Pick the bill month first"); $("month").focus(); return; }
     const entry = {
       month, total: r.v.total, mainPrev: r.v.mainPrev, mainCur: r.v.mainCur, subPrev: r.v.subPrev, subCur: r.v.subCur,
       mode: data.mode, fixed: r.fixed, a: r.a, b: r.b, subU: r.subU, otherU: r.otherU, mainU: r.mainU,
@@ -399,6 +421,7 @@
       if (!confirm(`${monthLabel(month)} is already saved. Replace it?`)) return;
       data.history[i] = entry;
     } else data.history.push(entry);
+    sync.put(entry);
     // Start next month: current readings become previous readings.
     $("month").value = month ? nextMonth(month) : "";
     $("mainPrev").value = r.v.mainCur; $("subPrev").value = r.v.subCur;
@@ -420,6 +443,7 @@
   ["setA", "setB"].forEach((id, i) => $(id).addEventListener("input", (e) => {
     data.names[i ? "b" : "a"] = e.target.value.trim() || (i ? "Prashant" : "Rushikesh");
     store.save(data); render();
+    clearTimeout(sync.nt); sync.nt = setTimeout(() => sync.putNames(), 800);
   }));
 
   $("clearBtn").onclick = () => {
@@ -441,9 +465,137 @@
       const d = JSON.parse(await file.text());
       if (!Array.isArray(d.history)) throw new Error();
       if (!confirm(`Restore ${d.history.length} saved month(s)? This replaces current history.`)) return;
-      data = Object.assign(data, d); store.save(data); init(); toast("Backup restored");
+      const { syncCode, pendingMigrate, ...rest } = d; // keep this phone's sync setting
+      data = Object.assign(data, rest); store.save(data); init(); toast("Backup restored");
+      data.history.forEach((h) => sync.put(h));
     } catch { alert("That file isn't a valid backup."); }
     e.target.value = "";
+  };
+
+  // If previous readings are empty, fill them from the latest saved month before the form's month.
+  function prefillPrev() {
+    if ($("mainPrev").value !== "" || $("subPrev").value !== "") return;
+    const m = $("month").value;
+    const last = data.history.filter((h) => h.month && (!m || h.month < m)).sort((x, y) => y.month.localeCompare(x.month))[0];
+    if (!last) return;
+    $("mainPrev").value = last.mainCur; $("subPrev").value = last.subCur;
+    persistDraft(); render();
+  }
+
+  // ---- sync (Firebase Firestore; enabled only when firebase-config.js has a config)
+  const FB = "https://www.gstatic.com/firebasejs/10.12.2/";
+  const sync = {
+    cfg: null, fs: null, db: null, unsubs: [],
+    on() { return !!(this.db && data.syncCode); },
+    col() { return this.fs.collection(this.db, "households", data.syncCode, "months"); },
+    namesDoc() { return this.fs.doc(this.db, "households", data.syncCode, "meta", "names"); },
+    put(entry) {
+      if (!this.on() || !entry.month) return;
+      this.fs.setDoc(this.fs.doc(this.col(), entry.month), entry).catch((e) => this.status("error", e));
+    },
+    remove(month) {
+      if (!this.on() || !month) return;
+      this.fs.deleteDoc(this.fs.doc(this.col(), month)).catch((e) => this.status("error", e));
+    },
+    putNames() {
+      if (!this.on()) return;
+      this.fs.setDoc(this.namesDoc(), { ...data.names }).catch((e) => this.status("error", e));
+    },
+    status(kind, err) {
+      const map = { ok: ["Synced", "var(--a)"], offline: ["Offline – will sync later", "var(--b)"], wait: ["Connecting…", "var(--muted)"], error: ["Sync error", "var(--danger)"] };
+      const [txt, color] = map[kind];
+      $("syncStatus").textContent = txt; $("syncDot").style.background = color;
+      if (err) console.error(err);
+      if (kind === "error" && err) toast("Sync error: " + (err.code || err.message || err));
+    },
+    ui() {
+      $("syncCard").hidden = !this.cfg;
+      const on = !!data.syncCode;
+      $("syncOff").hidden = on; $("syncOn").hidden = !on;
+      $("syncDot").hidden = !on; $("syncStatus").hidden = !on;
+      $("histNote").textContent = on && this.cfg ? "shared with the other phone" : "saved on this phone";
+    },
+    async init() {
+      try { this.cfg = (await import("./firebase-config.js")).firebaseConfig || null; } catch { this.cfg = null; }
+      // Invite links look like …/#join=CODE
+      const m = location.hash.match(/join=([A-Za-z0-9]{20,})/);
+      if (m) {
+        history.replaceState(null, "", location.pathname + location.search);
+        if (this.cfg && m[1] !== data.syncCode && confirm("Join the shared bill history from the invite link?")) {
+          data.syncCode = m[1]; data.pendingMigrate = true; store.save(data);
+        }
+      }
+      this.ui();
+      if (this.cfg && data.syncCode) await this.connect();
+    },
+    async connect() {
+      this.status("wait");
+      try {
+        if (!this.db) {
+          const [{ initializeApp }, fs] = await Promise.all([import(FB + "firebase-app.js"), import(FB + "firebase-firestore.js")]);
+          this.fs = fs;
+          const app = initializeApp(this.cfg);
+          try { this.db = fs.initializeFirestore(app, { localCache: fs.persistentLocalCache() }); }
+          catch { this.db = fs.getFirestore(app); }
+        }
+        const fs = this.fs;
+        this.unsubs.forEach((u) => u()); this.unsubs = [];
+        this.unsubs.push(fs.onSnapshot(this.col(), { includeMetadataChanges: true }, (snap) => {
+          if (data.pendingMigrate && !snap.metadata.fromCache) {
+            // First connection on this phone: upload months that only exist locally.
+            const remote = new Set(snap.docs.map((d) => d.id));
+            data.history.filter((h) => h.month && !remote.has(h.month)).forEach((h) => this.put(h));
+            data.pendingMigrate = false; store.save(data);
+          }
+          if (data.pendingMigrate) return; // wait for server data before replacing local history
+          data.history = snap.docs.map((d) => d.data());
+          store.save(data); renderHistory(); prefillPrev();
+          this.status(snap.metadata.fromCache || snap.metadata.hasPendingWrites ? "offline" : "ok");
+        }, (e) => this.status("error", e)));
+        this.unsubs.push(fs.onSnapshot(this.namesDoc(), (d) => {
+          const n = d.data();
+          if (!n) { this.putNames(); return; }
+          data.names = { a: n.a || "Rushikesh", b: n.b || "Prashant" }; store.save(data);
+          if (document.activeElement !== $("setA")) $("setA").value = data.names.a;
+          if (document.activeElement !== $("setB")) $("setB").value = data.names.b;
+          render(); renderHistory();
+        }, (e) => this.status("error", e)));
+      } catch (e) { this.status("error", e); }
+    },
+    inviteLink() { return `${location.origin}${location.pathname}#join=${data.syncCode}`; },
+  };
+
+  function newCode() {
+    const chars = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789";
+    return Array.from(crypto.getRandomValues(new Uint8Array(24)), (b) => chars[b % chars.length]).join("");
+  }
+
+  $("syncStartBtn").onclick = async () => {
+    data.syncCode = newCode(); data.pendingMigrate = true; store.save(data);
+    sync.ui(); await sync.connect(); sync.putNames();
+    toast("Sync started – now send the invite");
+  };
+  $("joinBtn").onclick = async () => {
+    const raw = $("joinCode").value.trim();
+    const code = (raw.match(/join=([A-Za-z0-9]{20,})/) || [])[1] || (/^[A-Za-z0-9]{20,}$/.test(raw) ? raw : null);
+    if (!code) { toast("That code doesn't look right"); return; }
+    data.syncCode = code; data.pendingMigrate = true; store.save(data);
+    $("joinCode").value = ""; sync.ui(); await sync.connect(); toast("Joined ✓");
+  };
+  $("inviteBtn").onclick = async () => {
+    const text = `Open this link to share our electricity bill history:\n${sync.inviteLink()}`;
+    if (navigator.share) { try { await navigator.share({ text }); return; } catch (e) { if (e.name === "AbortError") return; } }
+    window.open("https://wa.me/?text=" + encodeURIComponent(text), "_blank");
+  };
+  $("copyCodeBtn").onclick = async () => {
+    try { await navigator.clipboard.writeText(sync.inviteLink()); toast("Invite link copied"); }
+    catch { prompt("Copy this invite link:", sync.inviteLink()); }
+  };
+  $("leaveBtn").onclick = () => {
+    if (!confirm("Stop syncing on this phone? History already here is kept, and the other phone is not affected.")) return;
+    sync.unsubs.forEach((u) => u()); sync.unsubs = [];
+    data.syncCode = null; data.pendingMigrate = false; store.save(data);
+    sync.ui(); renderHistory();
   };
 
   function init() {
@@ -453,9 +605,10 @@
       $("month").value = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
     }
     $("setA").value = data.names.a; $("setB").value = data.names.b;
-    renderHistory(); render();
+    renderHistory(); render(); prefillPrev();
   }
   init();
+  sync.init();
 })();
 </script>
 </body>

@@ -158,6 +158,8 @@
   .pay-box .row label { margin-bottom: 8px; }
   .chips { display: flex; gap: 6px; flex-wrap: wrap; }
   .chip { border: 1px solid var(--line); background: var(--input); color: var(--text); font: inherit; font-size: .8rem; padding: 6px 12px; border-radius: 999px; cursor: pointer; }
+  .hist li.more { display: block; padding-bottom: 0; }
+  .hist li.more .btn { width: 100%; }
   .view-only { display: none; }
   body.viewer .view-only { display: block; }
   body.viewer .edit-only { display: none !important; }
@@ -556,7 +558,9 @@
     const ul = $("hist");
     if (!data.history.length) { ul.innerHTML = `<li><p class="empty">No saved months yet. Saved months pre-fill next month's previous readings.</p></li>`; return; }
     ul.innerHTML = "";
-    [...data.history].sort((x, y) => (y.month || "").localeCompare(x.month || "")).forEach((h) => {
+    const sorted = [...data.history].sort((x, y) => (y.month || "").localeCompare(x.month || ""));
+    const SHOW = 3;
+    sorted.slice(0, renderHistory.all ? sorted.length : SHOW).forEach((h) => {
       const li = document.createElement("li");
       const badge = (k) => {
         const p = (h.paid || {})[k] || {};
@@ -582,6 +586,15 @@
       if (sync.canEdit()) li.append(del);
       ul.append(li);
     });
+    if (sorted.length > SHOW) {
+      const li = document.createElement("li");
+      li.className = "more";
+      const b = document.createElement("button");
+      b.type = "button"; b.className = "btn full";
+      b.textContent = renderHistory.all ? "Show latest 3 only" : `Show all (${sorted.length} months)`;
+      b.onclick = () => { renderHistory.all = !renderHistory.all; renderHistory(); if (!renderHistory.all) $("hist").closest("section").scrollIntoView({ behavior: "smooth" }); };
+      li.append(b); ul.append(li);
+    }
   }
 
   const fmtDate = (iso) => {
